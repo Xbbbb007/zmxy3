@@ -21,9 +21,18 @@ import { drawPlayer } from "../entities/PlayerGraphics";
 enum EnemyState {
   PATROL,    // 正常巡逻
   WINDUP,    // 前摇中（可被打断）
-  ATTACKING, // 攻击判定中
+  ATTACKING, // 攻击判定中（普通怪近战）
+  CHARGING,  // 冲锋中（冲锋怪高速冲向玩家）
+  AIMING,    // 瞄准中（投掷怪锁定方向）
   COOLDOWN,  // 攻击后冷却
   HIT,       // 受击硬直中
+}
+
+// ===== 敌人类型 =====
+enum EnemyType {
+  NORMAL,   // 普通近战怪（原来的）
+  CHARGER,  // 冲锋怪（远距离发现玩家后高速冲撞）
+  THROWER,  // 远程投掷怪（保持距离，扔东西打人）
 }
 
 // ===== 简单的敌人结构（后面会移到独立文件） =====
@@ -34,6 +43,7 @@ interface Enemy {
   hpBarBg: Phaser.GameObjects.Rectangle;
   hpBarFill: Phaser.GameObjects.Rectangle;
   alive: boolean;
+  type: EnemyType;               // 怪物类型
   // 巡逻状态
   patrolLeft: number;
   patrolRight: number;
@@ -53,6 +63,7 @@ export class BattleScene extends Phaser.Scene {
   private keyK!: Phaser.Input.Keyboard.Key; // 技能1：烈焰闪
   private keyL!: Phaser.Input.Keyboard.Key; // 技能2：巨剑术
   private enemies!: Phaser.Physics.Arcade.Group;
+  private projectiles!: Phaser.Physics.Arcade.Group; // 投掷物组（远程怪的弹药）
 
   // ========== 可调参数（随便改，找手感） ==========
   private readonly MOVE_SPEED = 300;       // 移动速度（越大跑得越快）
@@ -84,6 +95,24 @@ export class BattleScene extends Phaser.Scene {
   private readonly ENEMY_ATTACK_DAMAGE = 10;   // 敌人攻击伤害
   private readonly ENEMY_ATTACK_RANGE = 45;    // 敌人攻击距离（像素）
   private readonly ENEMY_ATTACK_KNOCKBACK = 180; // 敌人攻击击退力度
+
+  // 冲锋怪参数
+  private readonly CHARGER_DETECT_RANGE = 250;  // 发现玩家距离（比近战怪远很多）
+  private readonly CHARGER_CHARGE_SPEED = 450;   // 冲锋速度（很快！）
+  private readonly CHARGER_CHARGE_WINDUP = 600;  // 冲锋前摇（蓄力时间，可打断）
+  private readonly CHARGER_CHARGE_DURATION = 500; // 冲锋持续时间（毫秒）
+  private readonly CHARGER_CHARGE_DAMAGE = 15;   // 冲撞伤害
+  private readonly CHARGER_CHARGE_KNOCKBACK = 250; // 冲撞击退
+  private readonly CHARGER_COOLDOWN = 1200;      // 冲锋后冷却（比较久）
+
+  // 远程投掷怪参数
+  private readonly THROWER_DETECT_RANGE = 200;   // 发现玩家距离
+  private readonly THROWER_PREFERRED_DIST = 150;  // 偏好距离（保持这个距离扔东西）
+  private readonly THROWER_AIM_TIME = 400;        // 瞄准时间（毫秒，可打断）
+  private readonly THROWER_COOLDOWN = 1500;       // 投掷后冷却
+  private readonly THROWER_PROJECTILE_SPEED = 350; // 投掷物飞行速度
+  private readonly THROWER_PROJECTILE_DAMAGE = 8;  // 投掷物伤害
+  private readonly THROWER_RETREAT_SPEED = 80;    // 后退速度（玩家靠近时往后跑）
 
   // 玩家受击参数
   private readonly PLAYER_HIT_INVINCIBLE = 500; // 受伤后无敌时间（毫秒，防止连续掉血）
@@ -204,6 +233,11 @@ export class BattleScene extends Phaser.Scene {
       collideWorldBounds: true, // 组级别强制所有成员不能出界
     });
 
+    // ===== 5. 投掷物组（远程怪的弹药） =====
+    this.projectiles = this.physics.add.group({
+      allowGravity: false, // 投掷物不受重力影响
+    });
+
     // ===== 4. 玩家 =====
     this.player = this.add.container(100, 400);
     drawPlayer(this.player, this.facingRight);
@@ -218,6 +252,14 @@ export class BattleScene extends Phaser.Scene {
 
     this.physics.add.collider(this.player, groundGroup);
     this.physics.add.collider(this.enemies, groundGroup); // 敌人也要和地面碰撞
+
+    // 投掷物碰到玩家 → 造成伤害
+    this.physics.add.overlap(this.player, this.projectiles, (_playerObj, projObj) => {
+      const proj = projObj as Phaser.GameObjects.Arc;
+      const knockDir = this.player.x < proj.x ? -1 : 1;
+      this.damagePlayer(this.THROWER_PROJECTILE_DAMAGE, knockDir * 150);
+      proj.destroy();
+    });
 
     // ===== 5. 相机 =====
     this.cameras.main.setBounds(0, 0, this.MAP_WIDTH, this.MAP_HEIGHT);
@@ -234,10 +276,10 @@ export class BattleScene extends Phaser.Scene {
     this.setupDoubleTap(this.keyA, () => this.startDash(false));
     this.setupDoubleTap(this.keyD, () => this.startDash(true));
 
-    // ===== 7. 训练假人（走到它们面前按 J 砍） =====
-    this.spawnEnemy(350, 432, 100);
-    this.spawnEnemy(700, 432, 100);
-    this.spawnEnemy(1100, 432, 100);
+    // ===== 7. 敌人（不同类型混搭） =====
+    this.spawnEnemy(350, 432, 100, EnemyType.NORMAL);   // 普通近战怪
+    this.spawnEnemy(700, 432, 120, EnemyType.CHARGER);  // 冲锋怪（血厚一点）
+    this.spawnEnemy(1100, 432, 80, EnemyType.THROWER);  // 远程投掷怪（血薄一点）
 
     // ===== 8. HUD =====
     // 玩家血条（固定在屏幕左上角）
@@ -757,29 +799,79 @@ export class BattleScene extends Phaser.Scene {
 
   // ======================== 敌人系统 ========================
 
-  private spawnEnemy(x: number, y: number, maxHp: number) {
+  /**
+   * 生成敌人（根据 type 画不同外观）
+   * @param x     出生 X
+   * @param y     出生 Y
+   * @param maxHp 最大血量
+   * @param type  敌人类型（默认 NORMAL）
+   */
+  private spawnEnemy(x: number, y: number, maxHp: number, type: EnemyType = EnemyType.NORMAL) {
     const container = this.add.container(x, y);
-
-    // 画敌人（蓝灰色 + 小眼睛）
     const g = this.add.graphics();
-    g.fillStyle(0x4a5568, 1);
-    g.fillRect(-16, -24, 32, 48);
-    g.lineStyle(2, 0x718096);
-    g.strokeRect(-16, -24, 32, 48);
-    g.fillStyle(0xffffff, 1);
-    g.fillCircle(-5, -12, 4);
-    g.fillCircle(5, -12, 4);
-    g.fillStyle(0x000000, 1);
-    g.fillCircle(-4, -12, 2);
-    g.fillCircle(6, -12, 2);
+
+    // ---- 根据类型画不同外观 ----
+    switch (type) {
+      case EnemyType.NORMAL: {
+        // 普通怪：蓝灰色方块 + 小眼睛（原来的样子）
+        g.fillStyle(0x4a5568, 1);
+        g.fillRect(-16, -24, 32, 48);
+        g.lineStyle(2, 0x718096);
+        g.strokeRect(-16, -24, 32, 48);
+        // 眼睛
+        g.fillStyle(0xffffff, 1);
+        g.fillCircle(-5, -12, 4);
+        g.fillCircle(5, -12, 4);
+        g.fillStyle(0x000000, 1);
+        g.fillCircle(-4, -12, 2);
+        g.fillCircle(6, -12, 2);
+        break;
+      }
+      case EnemyType.CHARGER: {
+        // 冲锋怪：绿色，宽扁，头上两个角（像野牛）
+        g.fillStyle(0x48bb78, 1);
+        g.fillRect(-20, -20, 40, 40);
+        g.lineStyle(2, 0x2f855a);
+        g.strokeRect(-20, -20, 40, 40);
+        // 两只角（三角）
+        g.fillStyle(0xe8d44d, 1);
+        g.fillTriangle(-20, -20, -14, -20, -18, -32); // 左角
+        g.fillTriangle(20, -20, 14, -20, 18, -32);   // 右角
+        // 红色眼睛（凶狠）
+        g.fillStyle(0xff4444, 1);
+        g.fillCircle(-7, -8, 4);
+        g.fillCircle(7, -8, 4);
+        break;
+      }
+      case EnemyType.THROWER: {
+        // 投掷怪：紫色，瘦高，手持法杖
+        g.fillStyle(0x9b59b6, 1);
+        g.fillRect(-12, -28, 24, 56);
+        g.lineStyle(2, 0x7d3c98);
+        g.strokeRect(-12, -28, 24, 56);
+        // 法杖（一根竖线 + 顶部圆球）
+        g.lineStyle(2, 0xe8d44d, 1);
+        g.lineBetween(14, -20, 14, 20);
+        g.fillStyle(0xe8d44d, 1);
+        g.fillCircle(14, -24, 5);
+        // 眼睛（蓝色，神秘）
+        g.fillStyle(0x00e5ff, 1);
+        g.fillCircle(-4, -16, 3);
+        g.fillCircle(4, -16, 3);
+        break;
+      }
+    }
     container.add(g);
 
-    // 头顶血条
-    const hpBarBg = this.add.rectangle(x, y - 36, 40, 6, 0x333333);
-    const hpBarFill = this.add.rectangle(x - 19, y - 36, 38, 4, 0x48bb78).setOrigin(0, 0.5);
+    // ---- 头顶血条 ----
+    const hpBarY = type === EnemyType.THROWER ? -40 : -36; // 投掷怪高一点
+    const hpBarBg = this.add.rectangle(x, y + hpBarY, 40, 6, 0x333333);
+    const hpBarFill = this.add.rectangle(x - 19, y + hpBarY, 38, 4, 0x48bb78).setOrigin(0, 0.5);
 
+    // ---- 构建敌人数据 ----
     const enemy: Enemy = {
       container, hp: maxHp, maxHp, hpBarBg, hpBarFill, alive: true,
+      type,  // 记录类型
       patrolLeft: x - this.ENEMY_PATROL_RANGE,
       patrolRight: x + this.ENEMY_PATROL_RANGE,
       facingRight: true,
@@ -789,13 +881,16 @@ export class BattleScene extends Phaser.Scene {
     };
     container.setData("enemy", enemy);
 
+    // ---- 物理体 ----
     this.physics.add.existing(container);
     const body = container.body as Phaser.Physics.Arcade.Body;
-    body.setSize(32, 48);
-    body.setOffset(-16, -24);
-    body.setDragX(400);          // 击退后自动减速停下
-    body.setCollideWorldBounds(true); // 不能被打出地图
-    // 注意：不开 setAllowGravity(false)，让重力把敌人拉到地面上站稳
+    // 冲锋怪宽一些，投掷怪窄一些
+    const bodyW = type === EnemyType.CHARGER ? 40 : (type === EnemyType.THROWER ? 24 : 32);
+    const bodyH = type === EnemyType.THROWER ? 56 : (type === EnemyType.CHARGER ? 40 : 48);
+    body.setSize(bodyW, bodyH);
+    body.setOffset(-bodyW / 2, -bodyH / 2);
+    body.setDragX(400);
+    body.setCollideWorldBounds(true);
 
     this.enemies.add(container);
   }
@@ -858,7 +953,7 @@ export class BattleScene extends Phaser.Scene {
   /**
    * 每帧更新所有存活敌人：状态机 AI + 血条跟随
    *
-   * 状态机：PATROL → WINDUP → ATTACKING → COOLDOWN → PATROL
+   * 状态机：PATROL → WINDUP → ATTACKING/CHARGING/AIMING → COOLDOWN → PATROL
    *                        ↑ 被打断 → HIT → PATROL
    */
   private updateEnemies() {
@@ -869,7 +964,7 @@ export class BattleScene extends Phaser.Scene {
       const body = enemy.container.body as Phaser.Physics.Arcade.Body;
       const now = this.time.now;
 
-      // 计算与玩家的水平距离
+      // 计算与玩家的水平距离和方向
       const dx = this.player.x - enemy.container.x;
       const distToPlayer = Math.abs(dx);
 
@@ -885,9 +980,16 @@ export class BattleScene extends Phaser.Scene {
               if (enemy.container.x <= enemy.patrolLeft) enemy.facingRight = true;
             }
           }
-          // 玩家进入感知范围 → 进入前摇
-          if (distToPlayer < this.ENEMY_DETECT_RANGE) {
-            this.enemyStartWindup(enemy, dx);
+          // 根据类型用不同的感知范围
+          const detectRange = this.getDetectRange(enemy);
+          if (distToPlayer < detectRange) {
+            // 投掷怪特殊：玩家太近就后退而不是攻击
+            if (enemy.type === EnemyType.THROWER && distToPlayer < 80) {
+              const retreatDir = dx > 0 ? -1 : 1; // 远离玩家方向
+              body.setVelocityX(retreatDir * this.THROWER_RETREAT_SPEED);
+            } else {
+              this.enemyStartWindup(enemy, dx);
+            }
           }
           break;
         }
@@ -895,19 +997,52 @@ export class BattleScene extends Phaser.Scene {
         // ---- 前摇：站定不动，头顶感叹号，可被打断 ----
         case EnemyState.WINDUP: {
           body.setVelocityX(0);
-          // 前摇结束 → 进入攻击
           if (now >= enemy.stateTimer) {
             this.enemyPerformAttack(enemy);
           }
           break;
         }
 
-        // ---- 攻击判定中：等持续时间结束 ----
+        // ---- 普通怪近战攻击 ----
         case EnemyState.ATTACKING: {
           body.setVelocityX(0);
           if (now >= enemy.stateTimer) {
             enemy.state = EnemyState.COOLDOWN;
             enemy.stateTimer = now + this.ENEMY_ATTACK_COOLDOWN;
+          }
+          break;
+        }
+
+        // ---- 冲锋怪高速冲向玩家 ----
+        case EnemyState.CHARGING: {
+          // 持续朝玩家方向冲刺
+          const chargeDir = enemy.facingRight ? 1 : -1;
+          body.setVelocityX(chargeDir * this.CHARGER_CHARGE_SPEED);
+
+          // 碰撞检测：撞到玩家就造成伤害
+          const hitDx = this.player.x - enemy.container.x;
+          const hitDy = this.player.y - enemy.container.y;
+          if (Math.abs(hitDx) < 36 && Math.abs(hitDy) < 48) {
+            this.damagePlayer(this.CHARGER_CHARGE_DAMAGE, chargeDir * this.CHARGER_CHARGE_KNOCKBACK);
+          }
+
+          // 冲锋时间结束 → 冷却
+          if (now >= enemy.stateTimer) {
+            body.setVelocityX(0);
+            enemy.state = EnemyState.COOLDOWN;
+            enemy.stateTimer = now + this.CHARGER_COOLDOWN;
+          }
+          break;
+        }
+
+        // ---- 投掷怪瞄准中（短暂停顿后扔东西） ----
+        case EnemyState.AIMING: {
+          body.setVelocityX(0);
+          if (now >= enemy.stateTimer) {
+            // 瞄准结束 → 投掷！
+            this.throwerLaunchProjectile(enemy);
+            enemy.state = EnemyState.COOLDOWN;
+            enemy.stateTimer = now + this.THROWER_COOLDOWN;
           }
           break;
         }
@@ -932,8 +1067,9 @@ export class BattleScene extends Phaser.Scene {
       // ---- 血条跟随 ----
       const x = enemy.container.x;
       const y = enemy.container.y;
-      enemy.hpBarBg.setPosition(x, y - 36);
-      enemy.hpBarFill.setPosition(x - 19, y - 36);
+      const hpBarY = enemy.type === EnemyType.THROWER ? -40 : -36;
+      enemy.hpBarBg.setPosition(x, y + hpBarY);
+      enemy.hpBarFill.setPosition(x - 19, y + hpBarY);
       // 前摇感叹号跟随
       if (enemy.windupIndicator) {
         enemy.windupIndicator.setPosition(x, y - 52);
@@ -941,20 +1077,42 @@ export class BattleScene extends Phaser.Scene {
     });
   }
 
+  /** 根据敌人类型返回感知范围 */
+  private getDetectRange(enemy: Enemy): number {
+    switch (enemy.type) {
+      case EnemyType.CHARGER: return this.CHARGER_DETECT_RANGE;
+      case EnemyType.THROWER: return this.THROWER_DETECT_RANGE;
+      default: return this.ENEMY_DETECT_RANGE;
+    }
+  }
+
   /**
    * 敌人进入前摇状态（感叹号 + 停顿）
+   * 不同类型有不同的前摇时间和感叹号颜色
    */
   private enemyStartWindup(enemy: Enemy, dxToPlayer: number) {
     enemy.state = EnemyState.WINDUP;
-    enemy.stateTimer = this.time.now + this.ENEMY_ATTACK_WINDUP;
+    // 根据类型确定前摇时长
+    const windupTime = enemy.type === EnemyType.CHARGER
+      ? this.CHARGER_CHARGE_WINDUP
+      : (enemy.type === EnemyType.THROWER ? this.THROWER_AIM_TIME : this.ENEMY_ATTACK_WINDUP);
+    enemy.stateTimer = this.time.now + windupTime;
     // 面朝玩家
     enemy.facingRight = dxToPlayer > 0;
+
+    // 感叹号颜色随类型变化
+    const indicatorColor = enemy.type === EnemyType.CHARGER ? "#ff8800"
+      : (enemy.type === EnemyType.THROWER ? "#aa44ff" : "#ff4444");
+
+    // 感叹号文字随类型变化
+    const indicatorText = enemy.type === EnemyType.CHARGER ? "!!"
+      : (enemy.type === EnemyType.THROWER ? "✦" : "!");
 
     // 头顶感叹号（视觉提示：这怪要攻击了！）
     enemy.windupIndicator = this.add.text(
       enemy.container.x, enemy.container.y - 52,
-      "!", {
-        fontSize: "24px", color: "#ff4444", fontFamily: "Arial", fontStyle: "bold",
+      indicatorText, {
+        fontSize: "24px", color: indicatorColor, fontFamily: "Arial", fontStyle: "bold",
       }
     ).setOrigin(0.5);
 
@@ -964,46 +1122,132 @@ export class BattleScene extends Phaser.Scene {
       alpha: 0.3,
       duration: 150,
       yoyo: true,
-      repeat: -1, // 一直闪到被移除
+      repeat: -1,
     });
   }
 
   /**
-   * 敌人执行攻击（判定框 + 伤害检测）
+   * 敌人执行攻击（根据类型走不同分支）
+   * - 普通怪：近战挥砍
+   * - 冲锋怪：开始高速冲锋
+   * - 投掷怪：进入瞄准（之后扔投掷物）
    */
   private enemyPerformAttack(enemy: Enemy) {
-    enemy.state = EnemyState.ATTACKING;
-    enemy.stateTimer = this.time.now + this.ENEMY_ATTACK_DURATION;
-
     // 移除前摇感叹号
     if (enemy.windupIndicator) {
       enemy.windupIndicator.destroy();
       enemy.windupIndicator = null;
     }
 
-    // 攻击判定
-    const dir = enemy.facingRight ? 1 : -1;
-    const hitX = enemy.container.x + dir * this.ENEMY_ATTACK_RANGE;
-    const dx = this.player.x - hitX;
-    const dy = this.player.y - enemy.container.y;
+    switch (enemy.type) {
+      case EnemyType.NORMAL: {
+        // ---- 普通近战攻击（原有逻辑） ----
+        enemy.state = EnemyState.ATTACKING;
+        enemy.stateTimer = this.time.now + this.ENEMY_ATTACK_DURATION;
 
-    // 命中检测
-    if (Math.abs(dx) < 34 && Math.abs(dy) < 48) {
-      this.damagePlayer(this.ENEMY_ATTACK_DAMAGE, dir * this.ENEMY_ATTACK_KNOCKBACK);
+        const dir = enemy.facingRight ? 1 : -1;
+        const hitX = enemy.container.x + dir * this.ENEMY_ATTACK_RANGE;
+        const dx = this.player.x - hitX;
+        const dy = this.player.y - enemy.container.y;
+
+        if (Math.abs(dx) < 34 && Math.abs(dy) < 48) {
+          this.damagePlayer(this.ENEMY_ATTACK_DAMAGE, dir * this.ENEMY_ATTACK_KNOCKBACK);
+        }
+
+        // 攻击特效（红色弧线）
+        const g = this.add.graphics();
+        g.lineStyle(3, 0xff6644, 0.7);
+        g.strokeEllipse(0, 0, 30, 40);
+        g.setPosition(hitX, enemy.container.y);
+        this.tweens.add({
+          targets: g, alpha: 0, scale: 1.3, duration: 150,
+          onComplete: () => g.destroy(),
+        });
+        break;
+      }
+
+      case EnemyType.CHARGER: {
+        // ---- 冲锋怪：开始冲锋！ ----
+        enemy.state = EnemyState.CHARGING;
+        enemy.stateTimer = this.time.now + this.CHARGER_CHARGE_DURATION;
+        // 冲锋特效：脚下灰尘
+        for (let i = 0; i < 3; i++) {
+          const dust = this.add.circle(
+            enemy.container.x + (Math.random() - 0.5) * 20,
+            enemy.container.y + 15,
+            4 + Math.random() * 3, 0xcccccc, 0.5
+          );
+          this.tweens.add({
+            targets: dust, alpha: 0, y: dust.y - 15, duration: 300,
+            onComplete: () => dust.destroy(),
+          });
+        }
+        break;
+      }
+
+      case EnemyType.THROWER: {
+        // ---- 投掷怪：进入瞄准状态 ----
+        enemy.state = EnemyState.AIMING;
+        enemy.stateTimer = this.time.now + 200; // 短暂瞄准后投掷
+        // 瞄准特效：法杖顶端闪光
+        const flash = this.add.circle(
+          enemy.container.x + (enemy.facingRight ? 14 : -14),
+          enemy.container.y - 24,
+          8, 0xe8d44d, 0.7
+        );
+        this.tweens.add({
+          targets: flash, scale: 2, alpha: 0, duration: 200,
+          onComplete: () => flash.destroy(),
+        });
+        break;
+      }
     }
+  }
 
-    // 攻击特效（红色弧线，区别于玩家的白色/黄色）
-    const g = this.add.graphics();
-    g.lineStyle(3, 0xff6644, 0.7);
-    g.strokeEllipse(0, 0, 30, 40);
-    g.setPosition(hitX, enemy.container.y);
+  /**
+   * 投掷怪发射投掷物（法杖能量球飞向玩家）
+   */
+  private throwerLaunchProjectile(enemy: Enemy) {
+    const dir = enemy.facingRight ? 1 : -1;
+    const startX = enemy.container.x + dir * 14;
+    const startY = enemy.container.y - 24;
 
+    // 创建投掷物（紫色能量球）
+    const proj = this.add.circle(startX, startY, 6, 0x9b59b6, 0.9);
+
+    // 先加入物理组（组会自动创建物理体）
+    this.projectiles.add(proj);
+
+    // 设置物理体属性
+    const projBody = proj.body as Phaser.Physics.Arcade.Body;
+    projBody.setAllowGravity(false);
+    projBody.setSize(12, 12);
+
+    // 计算飞行方向（朝向玩家当前位置）
+    const aimDx = this.player.x - startX;
+    const aimDy = this.player.y - startY;
+    const dist = Math.sqrt(aimDx * aimDx + aimDy * aimDy) || 1;
+    const speed = this.THROWER_PROJECTILE_SPEED;
+    projBody.setVelocity((aimDx / dist) * speed, (aimDy / dist) * speed);
+
+    // 内圈高光（跟随投掷物移动）
+    const inner = this.add.circle(startX, startY, 3, 0xe8d44d, 0.7);
     this.tweens.add({
-      targets: g,
-      alpha: 0,
-      scale: 1.3,
-      duration: 150,
-      onComplete: () => g.destroy(),
+      targets: inner,
+      duration: 3000,
+      onUpdate: () => {
+        if (proj.active) {
+          inner.setPosition(proj.x, proj.y);
+        } else {
+          inner.destroy();
+        }
+      },
+    });
+
+    // 3秒后自动销毁（防止飞出地图卡住）
+    this.time.delayedCall(3000, () => {
+      if (proj.active) proj.destroy();
+      if (inner.active) inner.destroy();
     });
   }
 
