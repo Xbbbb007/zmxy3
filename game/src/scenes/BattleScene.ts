@@ -16,48 +16,11 @@
  */
 
 import { drawPlayer } from "../entities/PlayerGraphics";
-
-// ===== 敌人状态机 =====
-enum EnemyState {
-  PATROL,    // 正常巡逻
-  WINDUP,    // 前摇中（可被打断）
-  ATTACKING, // 攻击判定中（普通怪近战）
-  CHARGING,  // 冲锋中（冲锋怪/BOSS高速冲向玩家）
-  AIMING,    // 瞄准中（投掷怪锁定方向）
-  BOSS_JUMP, // BOSS跳起中（在空中）
-  BOSS_FIRE, // BOSS弹幕发射中
-  COOLDOWN,  // 攻击后冷却
-  HIT,       // 受击硬直中
-}
-
-// ===== 敌人类型 =====
-enum EnemyType {
-  NORMAL,   // 普通近战怪（原来的）
-  CHARGER,  // 冲锋怪（远距离发现玩家后高速冲撞）
-  THROWER,  // 远程投掷怪（保持距离，扔东西打人）
-  BOSS,     // BOSS：三种攻击模式循环（冲锋/跳砸/弹幕）
-}
-
-// ===== 简单的敌人结构（后面会移到独立文件） =====
-interface Enemy {
-  container: Phaser.GameObjects.Container;
-  hp: number;
-  maxHp: number;
-  hpBarBg: Phaser.GameObjects.Rectangle;
-  hpBarFill: Phaser.GameObjects.Rectangle;
-  alive: boolean;
-  type: EnemyType;               // 怪物类型
-  // 巡逻状态
-  patrolLeft: number;
-  patrolRight: number;
-  facingRight: boolean;
-  // 攻击 AI 状态
-  state: EnemyState;
-  stateTimer: number;          // 当前状态结束时间
-  windupIndicator: Phaser.GameObjects.Text | null; // 前摇感叹号
-  // BOSS 专用
-  attackIndex: number;          // BOSS 当前攻击序号（0=冲锋,1=跳砸,2=弹幕，循环）
-}
+import { Enemy, EnemyState, EnemyType } from "../types/EnemyTypes";
+import { PlayerHud } from "../hud/PlayerHud";
+import { BossHud } from "../hud/BossHud";
+import { FlameDash } from "../skills/FlameDash";
+import { GiantSword } from "../skills/GiantSword";
 
 export class BattleScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Container;
@@ -146,25 +109,9 @@ export class BattleScene extends Phaser.Scene {
   private readonly PLAYER_MAX_MP = 100;        // 最大 MP
   private readonly MP_REGEN = 5;               // 每秒自然回蓝
 
-  // 技能 1：烈焰闪（K 键）
-  // 向前冲刺并对路径上的敌人造成火焰伤害
-  private readonly SKILL1_MP_COST = 20;         // MP 消耗
-  private readonly SKILL1_COOLDOWN = 5000;      // 冷却时间(ms)
-  private readonly SKILL1_DAMAGE = 30;           // 伤害
-  private readonly SKILL1_DASH_SPEED = 600;      // 冲刺速度
-  private readonly SKILL1_DASH_DURATION = 300;   // 冲刺持续时间(ms)
-  private readonly SKILL1_RANGE = 200;           // 伤害判定距离(像素)
-
-  // 技能 2：巨剑术（L 键）
-  // 蓄力1秒 → 头顶法阵 → 巨剑冲出，范围攻击
-  private readonly SKILL2_MP_COST = 30;            // MP 消耗（巨剑术消耗较大）
-  private readonly SKILL2_COOLDOWN = 8000;           // 冷却时间(ms)，8秒（大招CD长一些）
-  private readonly SKILL2_CHARGE_TIME = 2500;     // 蓄力时间(ms)，2.5秒
-  private readonly SKILL2_DAMAGE = 60;            // 伤害（巨剑术应该很痛）
-  private readonly SKILL2_SWORD_SPEED = 800;      // 巨剑飞行速度
-  private readonly SKILL2_SWORD_RANGE = 350;      // 巨剑飞行距离(像素)
-  private readonly SKILL2_AOE_WIDTH = 80;         // 巨剑AOE宽度(像素)
-  private readonly SKILL2_ANGLE = 15;              // 巨剑向下射击角度（度数，改这一个数就行）
+  // 技能实例（参数和逻辑都在各自的类里，BattleScene 只管调用）
+  private skill1 = new FlameDash();   // 技能1：烈焰闪
+  private skill2 = new GiantSword();  // 技能2：巨剑术
 
   // ===== 运行时状态 =====
   private facingRight = true;
@@ -181,32 +128,15 @@ export class BattleScene extends Phaser.Scene {
   private playerHitTimer = 0;  // 无敌结束时间
   private isPlayerDead = false; // 死亡标记（死了就不能动了）
   private isVictory = false;    // 胜利标记
-  private playerHpBarBg!: Phaser.GameObjects.Rectangle;
-  private playerHpBarFill!: Phaser.GameObjects.Rectangle;
 
   // 玩家 MP
   private playerMp = 100;
-  private playerMpBarBg!: Phaser.GameObjects.Rectangle;
-  private playerMpBarFill!: Phaser.GameObjects.Rectangle;
 
-  // 技能冷却计时
-  private skill1CooldownEnd = 0; // 技能1冷却结束时间
-  private skill2CooldownEnd = 0; // 技能2冷却结束时间
-  private isCastingSkill2 = false; // 正在蓄力巨剑术（不能移动/攻击）
-  private swordHitEnemies = new Set<Enemy>(); // 巨剑术：已命中的敌人（防止重复扣血）
+  // HUD 模块（血条、蓝条、技能CD图标 —— 已拆到独立文件）
+  private hud!: PlayerHud;
 
-  // 技能图标 CD 显示（两个小方框，冷却中显示倒计时数字）
-  private skill1Icon!: Phaser.GameObjects.Container;  // 技能1图标容器
-  private skill1CdOverlay!: Phaser.GameObjects.Rectangle; // CD 中覆盖的半透明黑色遮罩
-  private skill1CdText!: Phaser.GameObjects.Text;     // CD 剩余秒数文字
-  private skill2Icon!: Phaser.GameObjects.Container;
-  private skill2CdOverlay!: Phaser.GameObjects.Rectangle;
-  private skill2CdText!: Phaser.GameObjects.Text;
-
-  // BOSS 头顶血条（固定在屏幕顶部居中）
-  private bossHpBarBg!: Phaser.GameObjects.Rectangle;
-  private bossHpBarFill!: Phaser.GameObjects.Rectangle;
-  private bossHpLabel!: Phaser.GameObjects.Text;
+  // BOSS HUD（已拆到 BossHud 模块）
+  private bossHud!: BossHud;
   private bossRef: Enemy | null = null; // BOSS 引用（用于更新 HUD）
 
   constructor() {
@@ -229,10 +159,9 @@ export class BattleScene extends Phaser.Scene {
     this.playerHp = this.playerMaxHp;
     this.playerMp = this.PLAYER_MAX_MP;
     this.playerHitTimer = 0;
-    this.skill1CooldownEnd = 0;
-    this.skill2CooldownEnd = 0;
-    this.isCastingSkill2 = false;
-    this.swordHitEnemies = new Set<Enemy>();
+    // 重置技能实例（scene.restart() 时清零 CD 和蓄力状态）
+    this.skill1 = new FlameDash();
+    this.skill2 = new GiantSword();
     this.bossRef = null;
 
     // ===== 1. 背景 =====
@@ -323,48 +252,8 @@ export class BattleScene extends Phaser.Scene {
     this.spawnEnemy(1100, 432, 80, EnemyType.THROWER);  // 远程投掷怪
     this.spawnEnemy(2000, 432, this.BOSS_HP, EnemyType.BOSS); // BOSS：赤焰魔君
 
-    // ===== 8. HUD =====
-    // 玩家血条（固定在屏幕左上角）
-    this.playerHpBarBg = this.add.rectangle(90, 42, 160, 14, 0x333333).setScrollFactor(0);
-    this.playerHpBarFill = this.add.rectangle(11, 42, 158, 12, 0x48bb78)
-      .setOrigin(0, 0.5).setScrollFactor(0);
-    this.add.text(11, 28, "HP", {
-      fontSize: "12px", color: "#ffffff", fontFamily: "Arial",
-    }).setScrollFactor(0);
-
-    // 玩家蓝条（MP）
-    this.playerMpBarBg = this.add.rectangle(90, 62, 160, 14, 0x333333).setScrollFactor(0);
-    this.playerMpBarFill = this.add.rectangle(11, 62, 158, 12, 0x4299e1)
-      .setOrigin(0, 0.5).setScrollFactor(0);
-    this.add.text(11, 48, "MP", {
-      fontSize: "12px", color: "#ffffff", fontFamily: "Arial",
-    }).setScrollFactor(0);
-
-    // ===== 技能图标 + CD 显示（MP 蓝条右侧的两个小方框） =====
-    // 技能1图标（K:烈焰闪）—— 位于 MP 条右边
-    this.skill1Icon = this.createSkillIcon(185, 42, "K", 0xff6600);
-    this.skill1CdOverlay = this.add.rectangle(185, 42, 28, 28, 0x000000, 0)
-      .setScrollFactor(0); // alpha=0 默认不显示（没在 CD 时透明）
-    this.skill1CdText = this.add.text(185, 42, "", {
-      fontSize: "14px", color: "#ffffff", fontFamily: "Arial", fontStyle: "bold",
-    }).setOrigin(0.5).setScrollFactor(0).setVisible(false);
-
-    // 技能2图标（L:巨剑术）—— 紧跟技能1右侧
-    this.skill2Icon = this.createSkillIcon(220, 42, "L", 0xd4af37);
-    this.skill2CdOverlay = this.add.rectangle(220, 42, 28, 28, 0x000000, 0)
-      .setScrollFactor(0);
-    this.skill2CdText = this.add.text(220, 42, "", {
-      fontSize: "14px", color: "#ffffff", fontFamily: "Arial", fontStyle: "bold",
-    }).setOrigin(0.5).setScrollFactor(0).setVisible(false);
-
-    const tip = this.add.text(20, 75,
-      "A D 移动 | 双击冲刺 | 空格 跳跃 | J 攻击 | K 烈焰闪 | L 巨剑术",
-      {
-        fontSize: "13px", color: "#ffffff", fontFamily: "Arial",
-        backgroundColor: "#00000088", padding: { x: 8, y: 4 },
-      }
-    );
-    tip.setScrollFactor(0);
+    // ===== 8. HUD（已拆到 PlayerHud 模块，一行搞定） =====
+    this.hud = new PlayerHud(this, this.skill1.mpCost, this.skill2.mpCost);
   }
 
   // ======================== 每帧更新 ========================
@@ -386,7 +275,7 @@ export class BattleScene extends Phaser.Scene {
     }
 
     // ---- 移动（攻击/冲刺/蓄力中不响应） ----
-    if (!this.isDashing && !this.isAttacking && !this.isCastingSkill2) {
+    if (!this.isDashing && !this.isAttacking && !this.skill2.isCasting) {
       if (this.keyA.isDown) body.setVelocityX(-this.MOVE_SPEED);
       else if (this.keyD.isDown) body.setVelocityX(this.MOVE_SPEED);
     }
@@ -424,16 +313,16 @@ export class BattleScene extends Phaser.Scene {
     // ---- MP 自然恢复（每秒 +5） ----
     // delta = 上一帧到这一帧的时间差(ms)
     this.playerMp = Math.min(this.PLAYER_MAX_MP, this.playerMp + this.MP_REGEN * (this.game.loop.delta / 1000));
-    this.updatePlayerMpBar();
+    this.hud.updateMp(this.playerMp, this.PLAYER_MAX_MP);
 
     // ---- 更新敌人位置（血条跟随） ----
     this.updateEnemies();
 
     // ---- BOSS 血条刷新 ----
-    this.updateBossHud();
+    this.bossHud.update(this.bossRef);
 
     // ---- 技能 CD 显示刷新 ----
-    this.updateSkillCdDisplay();
+    this.hud.updateSkillCd(this.time.now, this.playerMp, this.skill1.cooldownEnd, this.skill2.cooldownEnd);
 
     // ---- 胜利检测：所有敌人都死了 ----
     if (!this.isVictory) {
@@ -539,405 +428,58 @@ export class BattleScene extends Phaser.Scene {
 
   /**
    * 技能输入处理（每帧调用）
+   *
+   * BattleScene 只负责：
+   * 1. 检测按键
+   * 2. 检查 MP 够不够
+   * 3. 检查攻击/冲刺中能不能用
+   * 4. 调用 skill.execute() 执行技能
+   * 5. execute 返回 true 就扣 MP
+   *
+   * 技能的具体逻辑（伤害、特效、CD）都在各自的类里。
    */
   private handleSkillInput() {
+    // 攻击/冲刺中不能放技能
+    if (this.isAttacking || this.isDashing) return;
+
     // 技能1：烈焰闪（K 键）
     if (Phaser.Input.Keyboard.JustDown(this.keyK)) {
-      this.useSkill1_FlameDash();
+      if (this.playerMp >= this.skill1.mpCost) {
+        if (this.skill1.execute(this.buildSkillCtx())) {
+          this.playerMp -= this.skill1.mpCost;
+        }
+      }
     }
     // 技能2：巨剑术（L 键）
     if (Phaser.Input.Keyboard.JustDown(this.keyL)) {
-      this.useSkill2_GiantSword();
-    }
-  }
-
-  /**
-   * 技能1：烈焰闪
-   * 效果：向前冲刺，路径上的敌人受到火焰伤害
-   */
-  private useSkill1_FlameDash() {
-    const now = this.time.now;
-
-    // 检查：MP 够不够
-    if (this.playerMp < this.SKILL1_MP_COST) return;
-    // 检查：CD 好没好
-    if (now < this.skill1CooldownEnd) return;
-    // 检查：攻击/冲刺中不能用
-    if (this.isAttacking || this.isDashing) return;
-
-    // 消耗 MP，进入 CD
-    this.playerMp -= this.SKILL1_MP_COST;
-    this.skill1CooldownEnd = now + this.SKILL1_COOLDOWN;
-
-    const body = this.player.body as Phaser.Physics.Arcade.Body;
-    const dir = this.facingRight ? 1 : -1;
-
-    // 冲刺移动
-    this.isDashing = true;
-    this.dashEndTime = now + this.SKILL1_DASH_DURATION;
-    body.setVelocityX(dir * this.SKILL1_DASH_SPEED);
-    body.setDragX(0);
-
-    // 伤害路径上的敌人
-    const startX = this.player.x;
-    const endX = startX + dir * this.SKILL1_RANGE;
-
-    this.enemies.getChildren().forEach((obj) => {
-      const enemy = (obj as Phaser.GameObjects.Container).getData("enemy") as Enemy;
-      if (!enemy?.alive) return;
-
-      const ex = enemy.container.x;
-      // 判断敌人是否在冲刺路径上
-      const inRange = dir > 0
-        ? (ex >= startX && ex <= endX)
-        : (ex <= startX && ex >= endX);
-      const closeY = Math.abs(enemy.container.y - this.player.y) < 48;
-
-      if (inRange && closeY) {
-        this.damageEnemy(enemy, this.SKILL1_DAMAGE, dir * 250);
+      if (this.playerMp >= this.skill2.mpCost) {
+        if (this.skill2.execute(this.buildSkillCtx())) {
+          this.playerMp -= this.skill2.mpCost;
+        }
       }
-    });
-
-    // 火焰拖尾特效
-    this.showFlameTrail(startX, this.player.y, endX);
-  }
-
-  /**
-   * 火焰拖尾视觉特效
-   */
-  private showFlameTrail(startX: number, y: number, endX: number) {
-    // 沿路径生成多个火焰粒子
-    const steps = 8;
-    for (let i = 0; i < steps; i++) {
-      const t = i / steps;
-      const x = startX + (endX - startX) * t;
-
-      // 每个火焰是一个小圆形，延迟出现形成拖尾感
-      const flame = this.add.circle(x, y, 12 + Math.random() * 8, 0xff6600, 0.7);
-
-      this.tweens.add({
-        targets: flame,
-        alpha: 0,
-        scale: 1.5 + Math.random() * 0.5,
-        y: y - 20 - Math.random() * 15, // 火焰往上飘
-        duration: 400,
-        delay: i * 30, // 逐个出现
-        onComplete: () => flame.destroy(),
-      });
     }
   }
 
-  // ======================== 技能2：巨剑术 ========================
-
   /**
-   * 技能2：巨剑术
-   * 蓄力1秒 → 法阵出现 → 巨剑从法阵中冲出 → AOE伤害
+   * 构建技能执行上下文
+   * 把 BattleScene 里技能需要的东西打包成一个对象传进去
    */
-  private useSkill2_GiantSword() {
-    const now = this.time.now;
-
-    if (this.playerMp < this.SKILL2_MP_COST) return;
-    if (now < this.skill2CooldownEnd) return;
-    if (this.isAttacking || this.isDashing || this.isCastingSkill2) return;
-
-    // 消耗 MP，进入 CD，锁定移动
-    this.playerMp -= this.SKILL2_MP_COST;
-    this.skill2CooldownEnd = now + this.SKILL2_COOLDOWN;
-    this.isCastingSkill2 = true;
-
-    const body = this.player.body as Phaser.Physics.Arcade.Body;
-    body.setVelocityX(0); // 蓄力时站定不动
-
-    // ===== 阶段1：蓄力 + 法阵出现（持续 CHARGE_TIME 毫秒） =====
-    const magicCircle = this.createMagicCircle();
-
-    // 法阵从透明渐渐亮起
-    magicCircle.setAlpha(0);
-    this.tweens.add({
-      targets: magicCircle,
-      alpha: 1,
-      scale: { from: 0.3, to: 1 },
-      duration: this.SKILL2_CHARGE_TIME * 0.8,
-      ease: "Power2",
-    });
-
-    // 法阵持续旋转
-    this.tweens.add({
-      targets: magicCircle,
-      angle: magicCircle.angle + 360,
-      duration: this.SKILL2_CHARGE_TIME,
-      ease: "Linear",
-    });
-
-    // 蓄力结束后 → 阶段2：巨剑冲出
-    this.time.delayedCall(this.SKILL2_CHARGE_TIME, () => {
-      this.isCastingSkill2 = false;
-      magicCircle.destroy();
-      this.launchGiantSword();
-    });
-  }
-
-  /**
-   * 创建法阵视觉特效（同心圆 + 放射线 + 符文）
-   */
-  private createMagicCircle(): Phaser.GameObjects.Container {
-    const dir = this.facingRight ? 1 : -1;
-    // 法阵出现在玩家头顶偏前方（朝敌人方向）
-    const cx = this.player.x + dir * 30;
-    const cy = this.player.y - 70;
-
-    const container = this.add.container(cx, cy);
-    const g = this.add.graphics();
-
-    // 外圈
-    g.lineStyle(3, 0x9b59b6, 0.9); // 紫色
-    g.strokeCircle(0, 0, 40);
-
-    // 内圈
-    g.lineStyle(2, 0xe8d44d, 0.8); // 金色
-    g.strokeCircle(0, 0, 25);
-
-    // 中心点
-    g.fillStyle(0xe8d44d, 0.6);
-    g.fillCircle(0, 0, 8);
-
-    // 六条放射线（符文效果）
-    for (let i = 0; i < 6; i++) {
-      const angle = (i / 6) * Math.PI * 2;
-      const x1 = Math.cos(angle) * 12;
-      const y1 = Math.sin(angle) * 12;
-      const x2 = Math.cos(angle) * 38;
-      const y2 = Math.sin(angle) * 38;
-      g.lineStyle(2, 0x9b59b6, 0.7);
-      g.lineBetween(x1, y1, x2, y2);
-    }
-
-    // 小三角符文（三个等距小三角）
-    for (let i = 0; i < 3; i++) {
-      const angle = (i / 3) * Math.PI * 2;
-      const cx2 = Math.cos(angle) * 32;
-      const cy2 = Math.sin(angle) * 32;
-      g.fillStyle(0xe8d44d, 0.5);
-      g.fillTriangle(cx2 - 5, cy2 - 4, cx2 + 5, cy2 - 4, cx2, cy2 + 5);
-    }
-
-    container.add(g);
-
-    // 倾斜朝向敌人（椭圆化 + 旋转）
-    container.setScale(1, 0.5); // 压扁成椭圆，模拟透视倾斜
-    container.setAngle(dir > 0 ? -15 : 15); // 微微倾斜
-
-    // 发光效果（半透明大圆做光晕）
-    const glow = this.add.circle(0, 0, 55, 0x9b59b6, 0.15);
-    container.addAt(glow, 0); // 插在底层
-
-    return container;
-  }
-
-  /**
-   * 巨剑从法阵位置冲出，飞向面朝方向
-   */
-  private launchGiantSword() {
-    this.swordHitEnemies.clear();
-    const dir = this.facingRight ? 1 : -1;
-    const startX = this.player.x + dir * 30;
-    const startY = this.player.y - 70; // 从法阵高度出发（头顶）
-
-    // 向下射击：用三角函数计算终点
-    const angleRad = Phaser.Math.DegToRad(this.SKILL2_ANGLE);
-    const endX = startX + dir * Math.cos(angleRad) * this.SKILL2_SWORD_RANGE;
-    const endY = startY + Math.sin(angleRad) * this.SKILL2_SWORD_RANGE;
-
-    // 画巨剑（用多边形）
-    const sword = this.add.container(startX, startY);
-    const g = this.add.graphics();
-
-    // 剑身（菱形，很长）
-    g.fillStyle(0xd4af37, 1); // 金色
-    g.fillPoints([
-      new Phaser.Geom.Point(0, -60),   // 剑尖
-      new Phaser.Geom.Point(12, -10),  // 右上
-      new Phaser.Geom.Point(6, 20),    // 右下
-      new Phaser.Geom.Point(-6, 20),   // 左下
-      new Phaser.Geom.Point(-12, -10), // 左上
-    ], true);
-
-    // 剑身中线（发光）
-    g.lineStyle(2, 0xffffff, 0.6);
-    g.lineBetween(0, -55, 0, 15);
-
-    // 剑柄
-    g.fillStyle(0x8b4513, 1); // 棕色
-    g.fillRect(-4, 20, 8, 15);
-    // 护手
-    g.fillStyle(0xd4af37, 1);
-    g.fillRect(-14, 18, 28, 5);
-
-    sword.add(g);
-
-    // 巨剑朝向：水平 90° + 向下角度 = 实际旋转角度
-    sword.setAngle(dir > 0 ? 90 + this.SKILL2_ANGLE : -(90 + this.SKILL2_ANGLE));
-    sword.setScale(0.5);
-
-    // 巨剑飞出动画（沿 30° 斜下方飞行）
-    this.tweens.add({
-      targets: sword,
-      x: endX,
-      y: endY,
-      scale: 1.2,
-      duration: (this.SKILL2_SWORD_RANGE / this.SKILL2_SWORD_SPEED) * 1000,
-      ease: "Power1",
-      // 飞行过程中持续检测伤害
-      onUpdate: () => {
-        this.swordHitCheck(sword.x, sword.y, dir);
+  private buildSkillCtx() {
+    return {
+      scene: this,
+      player: this.player,
+      facingRight: this.facingRight,
+      enemies: this.enemies,
+      damageEnemy: (enemy: Enemy, damage: number, knockbackX: number) =>
+        this.damageEnemy(enemy, damage, knockbackX),
+      setDash: (isDashing: boolean, endTime: number) => {
+        this.isDashing = isDashing;
+        this.dashEndTime = endTime;
       },
-      onComplete: () => {
-        // 到达终点后淡出消失
-        this.tweens.add({
-          targets: sword,
-          alpha: 0,
-          scale: 0.3,
-          duration: 200,
-          onComplete: () => sword.destroy(),
-        });
-      },
-    });
-
-    // 剑身拖尾光效（跟随飞行路径）
-    this.swordTrail(startX, startY, endX, endY, dir);
+    };
   }
 
-  /**
-   * 巨剑飞行路径上的伤害检测
-   * 已经命中过的敌人不会重复受伤
-   */
-  private swordHitCheck(swordX: number, swordY: number, dir: number) {
-    this.enemies.getChildren().forEach((obj) => {
-      const enemy = (obj as Phaser.GameObjects.Container).getData("enemy") as Enemy;
-      if (!enemy?.alive) return;
-      if (this.swordHitEnemies.has(enemy)) return; // 已经打过了
 
-      const dx = enemy.container.x - swordX;
-      const dy = enemy.container.y - swordY;
-
-      // AOE 判定：水平方向在剑前方一定范围内，垂直距离小于 AOE 宽度
-      if (Math.abs(dy) < this.SKILL2_AOE_WIDTH / 2 && Math.abs(dx) < 50) {
-        this.damageEnemy(enemy, this.SKILL2_DAMAGE, dir * 350);
-        this.swordHitEnemies.add(enemy);
-      }
-    });
-  }
-
-  /**
-   * 巨剑飞行的拖尾光效
-   */
-  private swordTrail(startX: number, startY: number, endX: number, endY: number, dir: number) {
-    const steps = 12;
-    for (let i = 0; i < steps; i++) {
-      const t = i / steps;
-      const x = startX + (endX - startX) * t;
-      const y = startY + (endY - startY) * t;
-
-      const particle = this.add.circle(x, y, 6 + Math.random() * 6, 0xd4af37, 0.5);
-
-      this.tweens.add({
-        targets: particle,
-        alpha: 0,
-        scale: 2,
-        y: y - 10 - Math.random() * 10,
-        duration: 300 + Math.random() * 200,
-        delay: i * 40,
-        onComplete: () => particle.destroy(),
-      });
-    }
-  }
-
-  private updatePlayerMpBar() {
-    const ratio = this.playerMp / this.PLAYER_MAX_MP;
-    this.playerMpBarFill.width = 158 * ratio;
-  }
-
-  // ======================== 技能图标 CD 显示 ========================
-
-  /**
-   * 创建技能图标（一个带边框和快捷键标签的小方块）
-   *
-   * @param cx     图标中心 X（屏幕坐标）
-   * @param cy     图标中心 Y（屏幕坐标）
-   * @param key    快捷键显示文字（"K" 或 "L"）
-   * @param color  图标主色调（烈焰闪=橙色，巨剑术=金色）
-   * @returns 图标的 Container（方便后续操作）
-   */
-  private createSkillIcon(cx: number, cy: number, key: string, color: number): Phaser.GameObjects.Container {
-    const icon = this.add.container(cx, cy);
-    icon.setScrollFactor(0); // 固定在屏幕上，不随相机滚动
-
-    // 底色（深色半透明，让 CD 遮罩叠加时更明显）
-    const bg = this.add.rectangle(0, 0, 28, 28, 0x222222, 0.9);
-    icon.add(bg);
-
-    // 彩色内圈（代表技能属性的颜色）
-    const inner = this.add.rectangle(0, 0, 22, 22, color, 0.5);
-    icon.add(inner);
-
-    // 快捷键字母（左上角小字，方便玩家知道按哪个键）
-    const keyLabel = this.add.text(-10, -10, key, {
-      fontSize: "10px", color: "#ffffff", fontFamily: "Arial", fontStyle: "bold",
-    }).setOrigin(0.5);
-    icon.add(keyLabel);
-
-    return icon;
-  }
-
-  /**
-   * 每帧刷新技能 CD 显示
-   *
-   * 原理：
-   * - 如果当前时间 < 冷却结束时间，说明技能还在 CD 中
-   * - 显示半透明黑色遮罩覆盖图标（视觉上变暗）
-   * - 在图标上显示剩余秒数（向上取整，让玩家知道还要等多久）
-   * - CD 结束后隐藏遮罩和数字
-   *
-   * 同时检查 MP 是否足够：MP 不够时也显示遮罩提示（但显示"MP不足"）
-   */
-  private updateSkillCdDisplay() {
-    const now = this.time.now;
-
-    // ---- 技能1：烈焰闪 ----
-    const skill1Remaining = Math.max(0, this.skill1CooldownEnd - now); // 剩余 CD 毫秒数
-    if (skill1Remaining > 0) {
-      // CD 中：显示遮罩 + 倒计时
-      this.skill1CdOverlay.setFillStyle(0x000000, 0.6); // 半透明黑色
-      this.skill1CdOverlay.setVisible(true);
-      this.skill1CdText.setText(Math.ceil(skill1Remaining / 1000).toString()); // 毫秒→秒，向上取整
-      this.skill1CdText.setVisible(true);
-    } else if (this.playerMp < this.SKILL1_MP_COST) {
-      // 没在 CD 但蓝不够：显示遮罩但不显示倒计时（提示"缺蓝"）
-      this.skill1CdOverlay.setFillStyle(0x000000, 0.4);
-      this.skill1CdOverlay.setVisible(true);
-      this.skill1CdText.setVisible(false);
-    } else {
-      // 技能就绪：隐藏遮罩
-      this.skill1CdOverlay.setVisible(false);
-      this.skill1CdText.setVisible(false);
-    }
-
-    // ---- 技能2：巨剑术（同样逻辑） ----
-    const skill2Remaining = Math.max(0, this.skill2CooldownEnd - now);
-    if (skill2Remaining > 0) {
-      this.skill2CdOverlay.setFillStyle(0x000000, 0.6);
-      this.skill2CdOverlay.setVisible(true);
-      this.skill2CdText.setText(Math.ceil(skill2Remaining / 1000).toString());
-      this.skill2CdText.setVisible(true);
-    } else if (this.playerMp < this.SKILL2_MP_COST) {
-      this.skill2CdOverlay.setFillStyle(0x000000, 0.4);
-      this.skill2CdOverlay.setVisible(true);
-      this.skill2CdText.setVisible(false);
-    } else {
-      this.skill2CdOverlay.setVisible(false);
-      this.skill2CdText.setVisible(false);
-    }
-  }
 
   // ======================== 敌人系统 ========================
 
@@ -1084,7 +626,7 @@ export class BattleScene extends Phaser.Scene {
     // ---- BOSS 特殊初始化 ----
     if (type === EnemyType.BOSS) {
       this.bossRef = enemy;
-      this.createBossHudBar();
+      this.bossHud = new BossHud(this, "赤焰魔君");
     }
   }
 
@@ -1671,45 +1213,6 @@ export class BattleScene extends Phaser.Scene {
     }
   }
 
-  // ======================== BOSS HUD ========================
-
-  /**
-   * 创建 BOSS 专属血条（屏幕顶部居中，大血条 + 名字）
-   */
-  private createBossHudBar() {
-    const barW = 400;
-    const barH = 18;
-    const cx = 480; // 屏幕中心 X
-
-    // 背景
-    this.bossHpBarBg = this.add.rectangle(cx, 18, barW + 4, barH + 4, 0x222222)
-      .setScrollFactor(0).setDepth(10);
-    // 血条
-    this.bossHpBarFill = this.add.rectangle(cx - barW / 2, 18, barW, barH, 0xcc0000)
-      .setOrigin(0, 0.5).setScrollFactor(0).setDepth(11);
-    // 名字
-    this.bossHpLabel = this.add.text(cx, 6, "赤焰魔君", {
-      fontSize: "14px", color: "#ff4444", fontFamily: "SimHei", fontStyle: "bold",
-    }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(11);
-  }
-
-  /**
-   * 每帧更新 BOSS 血条（在主 update 中调用）
-   */
-  private updateBossHud() {
-    if (!this.bossRef || !this.bossRef.alive) {
-      // BOSS 死了就隐藏血条
-      if (this.bossHpBarBg) this.bossHpBarBg.setVisible(false);
-      if (this.bossHpBarFill) this.bossHpBarFill.setVisible(false);
-      if (this.bossHpLabel) this.bossHpLabel.setVisible(false);
-      return;
-    }
-    const ratio = Math.max(0, this.bossRef.hp / this.bossRef.maxHp);
-    this.bossHpBarFill.width = 400 * ratio;
-    // 低血量变色（深红→暗红）
-    this.bossHpBarFill.setFillStyle(ratio > 0.3 ? 0xcc0000 : 0x660000);
-  }
-
   private killEnemy(enemy: Enemy) {
     this.tweens.add({
       targets: enemy.container,
@@ -1769,7 +1272,7 @@ export class BattleScene extends Phaser.Scene {
     });
 
     // 更新 HUD 血条
-    this.updatePlayerHpBar();
+    this.hud.updateHp(this.playerHp, this.playerMaxHp);
 
     // 死亡判定
     if (this.playerHp <= 0) {
@@ -1836,13 +1339,6 @@ export class BattleScene extends Phaser.Scene {
     this.input.keyboard!.once("keydown-R", () => {
       this.scene.restart(); // 重启当前场景，所有状态重置
     });
-  }
-
-  private updatePlayerHpBar() {
-    const ratio = Math.max(0, this.playerHp / this.playerMaxHp);
-    this.playerHpBarFill.width = 158 * ratio;
-    // 低血量变红
-    this.playerHpBarFill.setFillStyle(ratio > 0.3 ? 0x48bb78 : 0xe53e3e);
   }
 
   // ======================== 冲刺 ========================
