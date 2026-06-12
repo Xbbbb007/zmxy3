@@ -22,8 +22,10 @@ enum EnemyState {
   PATROL,    // 正常巡逻
   WINDUP,    // 前摇中（可被打断）
   ATTACKING, // 攻击判定中（普通怪近战）
-  CHARGING,  // 冲锋中（冲锋怪高速冲向玩家）
+  CHARGING,  // 冲锋中（冲锋怪/BOSS高速冲向玩家）
   AIMING,    // 瞄准中（投掷怪锁定方向）
+  BOSS_JUMP, // BOSS跳起中（在空中）
+  BOSS_FIRE, // BOSS弹幕发射中
   COOLDOWN,  // 攻击后冷却
   HIT,       // 受击硬直中
 }
@@ -33,6 +35,7 @@ enum EnemyType {
   NORMAL,   // 普通近战怪（原来的）
   CHARGER,  // 冲锋怪（远距离发现玩家后高速冲撞）
   THROWER,  // 远程投掷怪（保持距离，扔东西打人）
+  BOSS,     // BOSS：三种攻击模式循环（冲锋/跳砸/弹幕）
 }
 
 // ===== 简单的敌人结构（后面会移到独立文件） =====
@@ -52,6 +55,8 @@ interface Enemy {
   state: EnemyState;
   stateTimer: number;          // 当前状态结束时间
   windupIndicator: Phaser.GameObjects.Text | null; // 前摇感叹号
+  // BOSS 专用
+  attackIndex: number;          // BOSS 当前攻击序号（0=冲锋,1=跳砸,2=弹幕，循环）
 }
 
 export class BattleScene extends Phaser.Scene {
@@ -114,6 +119,26 @@ export class BattleScene extends Phaser.Scene {
   private readonly THROWER_PROJECTILE_DAMAGE = 8;  // 投掷物伤害
   private readonly THROWER_RETREAT_SPEED = 80;    // 后退速度（玩家靠近时往后跑）
 
+  // BOSS 参数（赤焰魔君）
+  private readonly BOSS_HP = 500;                 // BOSS 血量（很厚）
+  private readonly BOSS_PATROL_SPEED = 40;        // BOSS 慢步逼近速度（压迫感）
+  private readonly BOSS_CHARGE_SPEED = 500;       // BOSS 冲锋速度
+  private readonly BOSS_CHARGE_WINDUP = 800;      // BOSS 冲锋前摇（比冲锋怪长，给玩家反应时间）
+  private readonly BOSS_CHARGE_DURATION = 600;    // BOSS 冲锋持续时间
+  private readonly BOSS_CHARGE_DAMAGE = 20;       // BOSS 冲撞伤害
+  private readonly BOSS_CHARGE_KNOCKBACK = 300;   // BOSS 冲撞击退
+  private readonly BOSS_JUMP_WINDUP = 600;        // BOSS 跳砸前摇
+  private readonly BOSS_JUMP_HEIGHT = 200;        // BOSS 跳起高度（像素）
+  private readonly BOSS_JUMP_DAMAGE = 25;         // BOSS 跳砸伤害
+  private readonly BOSS_JUMP_KNOCKBACK = 350;     // BOSS 跳砸击退
+  private readonly BOSS_JUMP_SHOCKWAVE_SPEED = 250; // 跳砸冲击波扩散速度
+  private readonly BOSS_BARRAGE_WINDUP = 1000;    // BOSS 弹幕前摇
+  private readonly BOSS_BARRAGE_COUNT = 5;        // 弹幕数量（扇形发射）
+  private readonly BOSS_BARRAGE_DAMAGE = 10;      // 每颗弹幕伤害
+  private readonly BOSS_BARRAGE_SPEED = 300;      // 弹幕飞行速度
+  private readonly BOSS_COOLDOWN = 1500;          // BOSS 每次攻击后冷却
+  private readonly BOSS_HIT_STAGGER = 150;        // BOSS 受击硬直（很短，有霸体感）
+
   // 玩家受击参数
   private readonly PLAYER_HIT_INVINCIBLE = 500; // 受伤后无敌时间（毫秒，防止连续掉血）
 
@@ -132,8 +157,8 @@ export class BattleScene extends Phaser.Scene {
 
   // 技能 2：巨剑术（L 键）
   // 蓄力1秒 → 头顶法阵 → 巨剑冲出，范围攻击
-  private readonly SKILL2_MP_COST = 0;            // 测试阶段不耗蓝
-  private readonly SKILL2_COOLDOWN = 0;           // 测试阶段无冷却
+  private readonly SKILL2_MP_COST = 30;            // MP 消耗（巨剑术消耗较大）
+  private readonly SKILL2_COOLDOWN = 8000;           // 冷却时间(ms)，8秒（大招CD长一些）
   private readonly SKILL2_CHARGE_TIME = 2500;     // 蓄力时间(ms)，2.5秒
   private readonly SKILL2_DAMAGE = 60;            // 伤害（巨剑术应该很痛）
   private readonly SKILL2_SWORD_SPEED = 800;      // 巨剑飞行速度
@@ -168,7 +193,21 @@ export class BattleScene extends Phaser.Scene {
   private skill1CooldownEnd = 0; // 技能1冷却结束时间
   private skill2CooldownEnd = 0; // 技能2冷却结束时间
   private isCastingSkill2 = false; // 正在蓄力巨剑术（不能移动/攻击）
-  private swordHitEnemies = new Set<Enemy>(); // 万剑归宗：已命中的敌人（防止重复扣血）
+  private swordHitEnemies = new Set<Enemy>(); // 巨剑术：已命中的敌人（防止重复扣血）
+
+  // 技能图标 CD 显示（两个小方框，冷却中显示倒计时数字）
+  private skill1Icon!: Phaser.GameObjects.Container;  // 技能1图标容器
+  private skill1CdOverlay!: Phaser.GameObjects.Rectangle; // CD 中覆盖的半透明黑色遮罩
+  private skill1CdText!: Phaser.GameObjects.Text;     // CD 剩余秒数文字
+  private skill2Icon!: Phaser.GameObjects.Container;
+  private skill2CdOverlay!: Phaser.GameObjects.Rectangle;
+  private skill2CdText!: Phaser.GameObjects.Text;
+
+  // BOSS 头顶血条（固定在屏幕顶部居中）
+  private bossHpBarBg!: Phaser.GameObjects.Rectangle;
+  private bossHpBarFill!: Phaser.GameObjects.Rectangle;
+  private bossHpLabel!: Phaser.GameObjects.Text;
+  private bossRef: Enemy | null = null; // BOSS 引用（用于更新 HUD）
 
   constructor() {
     super({ key: "BattleScene" });
@@ -194,6 +233,7 @@ export class BattleScene extends Phaser.Scene {
     this.skill2CooldownEnd = 0;
     this.isCastingSkill2 = false;
     this.swordHitEnemies = new Set<Enemy>();
+    this.bossRef = null;
 
     // ===== 1. 背景 =====
     const sky = this.add.graphics();
@@ -253,11 +293,12 @@ export class BattleScene extends Phaser.Scene {
     this.physics.add.collider(this.player, groundGroup);
     this.physics.add.collider(this.enemies, groundGroup); // 敌人也要和地面碰撞
 
-    // 投掷物碰到玩家 → 造成伤害
+    // 投掷物碰到玩家 → 造成伤害（伤害值存在投掷物的 data 里）
     this.physics.add.overlap(this.player, this.projectiles, (_playerObj, projObj) => {
       const proj = projObj as Phaser.GameObjects.Arc;
       const knockDir = this.player.x < proj.x ? -1 : 1;
-      this.damagePlayer(this.THROWER_PROJECTILE_DAMAGE, knockDir * 150);
+      const dmg = (proj.getData("damage") as number) || this.THROWER_PROJECTILE_DAMAGE;
+      this.damagePlayer(dmg, knockDir * 150);
       proj.destroy();
     });
 
@@ -276,10 +317,11 @@ export class BattleScene extends Phaser.Scene {
     this.setupDoubleTap(this.keyA, () => this.startDash(false));
     this.setupDoubleTap(this.keyD, () => this.startDash(true));
 
-    // ===== 7. 敌人（不同类型混搭） =====
+    // ===== 7. 敌人（不同类型混搭 + BOSS） =====
     this.spawnEnemy(350, 432, 100, EnemyType.NORMAL);   // 普通近战怪
-    this.spawnEnemy(700, 432, 120, EnemyType.CHARGER);  // 冲锋怪（血厚一点）
-    this.spawnEnemy(1100, 432, 80, EnemyType.THROWER);  // 远程投掷怪（血薄一点）
+    this.spawnEnemy(700, 432, 120, EnemyType.CHARGER);  // 冲锋怪
+    this.spawnEnemy(1100, 432, 80, EnemyType.THROWER);  // 远程投掷怪
+    this.spawnEnemy(2000, 432, this.BOSS_HP, EnemyType.BOSS); // BOSS：赤焰魔君
 
     // ===== 8. HUD =====
     // 玩家血条（固定在屏幕左上角）
@@ -298,13 +340,25 @@ export class BattleScene extends Phaser.Scene {
       fontSize: "12px", color: "#ffffff", fontFamily: "Arial",
     }).setScrollFactor(0);
 
-    // 技能 CD 提示
-    this.add.text(175, 55, "K:烈焰闪 L:巨剑术", {
-      fontSize: "11px", color: "#f5c842", fontFamily: "Arial",
-    }).setScrollFactor(0);
+    // ===== 技能图标 + CD 显示（MP 蓝条右侧的两个小方框） =====
+    // 技能1图标（K:烈焰闪）—— 位于 MP 条右边
+    this.skill1Icon = this.createSkillIcon(185, 42, "K", 0xff6600);
+    this.skill1CdOverlay = this.add.rectangle(185, 42, 28, 28, 0x000000, 0)
+      .setScrollFactor(0); // alpha=0 默认不显示（没在 CD 时透明）
+    this.skill1CdText = this.add.text(185, 42, "", {
+      fontSize: "14px", color: "#ffffff", fontFamily: "Arial", fontStyle: "bold",
+    }).setOrigin(0.5).setScrollFactor(0).setVisible(false);
+
+    // 技能2图标（L:巨剑术）—— 紧跟技能1右侧
+    this.skill2Icon = this.createSkillIcon(220, 42, "L", 0xd4af37);
+    this.skill2CdOverlay = this.add.rectangle(220, 42, 28, 28, 0x000000, 0)
+      .setScrollFactor(0);
+    this.skill2CdText = this.add.text(220, 42, "", {
+      fontSize: "14px", color: "#ffffff", fontFamily: "Arial", fontStyle: "bold",
+    }).setOrigin(0.5).setScrollFactor(0).setVisible(false);
 
     const tip = this.add.text(20, 75,
-      "A D 移动 | 双击冲刺 | 空格 跳跃 | J 攻击 | K 技能",
+      "A D 移动 | 双击冲刺 | 空格 跳跃 | J 攻击 | K 烈焰闪 | L 巨剑术",
       {
         fontSize: "13px", color: "#ffffff", fontFamily: "Arial",
         backgroundColor: "#00000088", padding: { x: 8, y: 4 },
@@ -374,6 +428,12 @@ export class BattleScene extends Phaser.Scene {
 
     // ---- 更新敌人位置（血条跟随） ----
     this.updateEnemies();
+
+    // ---- BOSS 血条刷新 ----
+    this.updateBossHud();
+
+    // ---- 技能 CD 显示刷新 ----
+    this.updateSkillCdDisplay();
 
     // ---- 胜利检测：所有敌人都死了 ----
     if (!this.isVictory) {
@@ -797,6 +857,88 @@ export class BattleScene extends Phaser.Scene {
     this.playerMpBarFill.width = 158 * ratio;
   }
 
+  // ======================== 技能图标 CD 显示 ========================
+
+  /**
+   * 创建技能图标（一个带边框和快捷键标签的小方块）
+   *
+   * @param cx     图标中心 X（屏幕坐标）
+   * @param cy     图标中心 Y（屏幕坐标）
+   * @param key    快捷键显示文字（"K" 或 "L"）
+   * @param color  图标主色调（烈焰闪=橙色，巨剑术=金色）
+   * @returns 图标的 Container（方便后续操作）
+   */
+  private createSkillIcon(cx: number, cy: number, key: string, color: number): Phaser.GameObjects.Container {
+    const icon = this.add.container(cx, cy);
+    icon.setScrollFactor(0); // 固定在屏幕上，不随相机滚动
+
+    // 底色（深色半透明，让 CD 遮罩叠加时更明显）
+    const bg = this.add.rectangle(0, 0, 28, 28, 0x222222, 0.9);
+    icon.add(bg);
+
+    // 彩色内圈（代表技能属性的颜色）
+    const inner = this.add.rectangle(0, 0, 22, 22, color, 0.5);
+    icon.add(inner);
+
+    // 快捷键字母（左上角小字，方便玩家知道按哪个键）
+    const keyLabel = this.add.text(-10, -10, key, {
+      fontSize: "10px", color: "#ffffff", fontFamily: "Arial", fontStyle: "bold",
+    }).setOrigin(0.5);
+    icon.add(keyLabel);
+
+    return icon;
+  }
+
+  /**
+   * 每帧刷新技能 CD 显示
+   *
+   * 原理：
+   * - 如果当前时间 < 冷却结束时间，说明技能还在 CD 中
+   * - 显示半透明黑色遮罩覆盖图标（视觉上变暗）
+   * - 在图标上显示剩余秒数（向上取整，让玩家知道还要等多久）
+   * - CD 结束后隐藏遮罩和数字
+   *
+   * 同时检查 MP 是否足够：MP 不够时也显示遮罩提示（但显示"MP不足"）
+   */
+  private updateSkillCdDisplay() {
+    const now = this.time.now;
+
+    // ---- 技能1：烈焰闪 ----
+    const skill1Remaining = Math.max(0, this.skill1CooldownEnd - now); // 剩余 CD 毫秒数
+    if (skill1Remaining > 0) {
+      // CD 中：显示遮罩 + 倒计时
+      this.skill1CdOverlay.setFillStyle(0x000000, 0.6); // 半透明黑色
+      this.skill1CdOverlay.setVisible(true);
+      this.skill1CdText.setText(Math.ceil(skill1Remaining / 1000).toString()); // 毫秒→秒，向上取整
+      this.skill1CdText.setVisible(true);
+    } else if (this.playerMp < this.SKILL1_MP_COST) {
+      // 没在 CD 但蓝不够：显示遮罩但不显示倒计时（提示"缺蓝"）
+      this.skill1CdOverlay.setFillStyle(0x000000, 0.4);
+      this.skill1CdOverlay.setVisible(true);
+      this.skill1CdText.setVisible(false);
+    } else {
+      // 技能就绪：隐藏遮罩
+      this.skill1CdOverlay.setVisible(false);
+      this.skill1CdText.setVisible(false);
+    }
+
+    // ---- 技能2：巨剑术（同样逻辑） ----
+    const skill2Remaining = Math.max(0, this.skill2CooldownEnd - now);
+    if (skill2Remaining > 0) {
+      this.skill2CdOverlay.setFillStyle(0x000000, 0.6);
+      this.skill2CdOverlay.setVisible(true);
+      this.skill2CdText.setText(Math.ceil(skill2Remaining / 1000).toString());
+      this.skill2CdText.setVisible(true);
+    } else if (this.playerMp < this.SKILL2_MP_COST) {
+      this.skill2CdOverlay.setFillStyle(0x000000, 0.4);
+      this.skill2CdOverlay.setVisible(true);
+      this.skill2CdText.setVisible(false);
+    } else {
+      this.skill2CdOverlay.setVisible(false);
+      this.skill2CdText.setVisible(false);
+    }
+  }
+
   // ======================== 敌人系统 ========================
 
   /**
@@ -860,62 +1002,123 @@ export class BattleScene extends Phaser.Scene {
         g.fillCircle(4, -16, 3);
         break;
       }
+      case EnemyType.BOSS: {
+        // BOSS（赤焰魔君）：暗红色大块 + 金色冠角 + 火焰眼睛
+        // 身体（比其他怪大两倍）
+        g.fillStyle(0xcc0000, 1);
+        g.fillRect(-32, -40, 64, 80);
+        g.lineStyle(3, 0x8b0000);
+        g.strokeRect(-32, -40, 64, 80);
+        // 金色肩甲
+        g.fillStyle(0xe8d44d, 1);
+        g.fillRect(-36, -30, 8, 20); // 左肩
+        g.fillRect(28, -30, 8, 20);  // 右肩
+        // 金色冠角（三只角，比冲锋怪更霸气）
+        g.fillTriangle(-20, -40, -12, -40, -16, -58);  // 左角
+        g.fillTriangle(0, -40, 0, -40, 0, -62);        // 中角（最高）
+        g.fillTriangle(20, -40, 12, -40, 16, -58);     // 右角
+        g.fillRect(-2, -62, 4, 22);                     // 中角柱体
+        // 火焰眼睛（橙红发光）
+        g.fillStyle(0xff6600, 1);
+        g.fillCircle(-10, -20, 6);
+        g.fillCircle(10, -20, 6);
+        g.fillStyle(0xffff00, 1); // 瞳孔亮黄
+        g.fillCircle(-10, -20, 3);
+        g.fillCircle(10, -20, 3);
+        // 胸口符文（X形）
+        g.lineStyle(2, 0xe8d44d, 0.6);
+        g.lineBetween(-15, -5, 15, 25);
+        g.lineBetween(15, -5, -15, 25);
+        break;
+      }
     }
     container.add(g);
 
     // ---- 头顶血条 ----
-    const hpBarY = type === EnemyType.THROWER ? -40 : -36; // 投掷怪高一点
-    const hpBarBg = this.add.rectangle(x, y + hpBarY, 40, 6, 0x333333);
-    const hpBarFill = this.add.rectangle(x - 19, y + hpBarY, 38, 4, 0x48bb78).setOrigin(0, 0.5);
+    // BOSS 不需要头顶血条（用屏幕顶部的专用血条），但为了 damageEnemy 兼容还是创建
+    const hpBarY = type === EnemyType.BOSS ? -50 : (type === EnemyType.THROWER ? -40 : -36);
+    const hpBarW = type === EnemyType.BOSS ? 78 : 38; // BOSS 血条更宽
+    const hpBarBg = this.add.rectangle(x, y + hpBarY, hpBarW + 2, 6, 0x333333);
+    const hpBarFill = this.add.rectangle(x - hpBarW / 2, y + hpBarY, hpBarW, 4, 0x48bb78).setOrigin(0, 0.5);
+
+    // BOSS 头顶血条默认隐藏（用屏幕顶部的）
+    if (type === EnemyType.BOSS) {
+      hpBarBg.setVisible(false);
+      hpBarFill.setVisible(false);
+    }
 
     // ---- 构建敌人数据 ----
     const enemy: Enemy = {
       container, hp: maxHp, maxHp, hpBarBg, hpBarFill, alive: true,
-      type,  // 记录类型
+      type,
       patrolLeft: x - this.ENEMY_PATROL_RANGE,
       patrolRight: x + this.ENEMY_PATROL_RANGE,
       facingRight: true,
       state: EnemyState.PATROL,
       stateTimer: 0,
       windupIndicator: null,
+      attackIndex: 0, // BOSS 攻击模式循环计数器
     };
     container.setData("enemy", enemy);
 
     // ---- 物理体 ----
     this.physics.add.existing(container);
     const body = container.body as Phaser.Physics.Arcade.Body;
-    // 冲锋怪宽一些，投掷怪窄一些
-    const bodyW = type === EnemyType.CHARGER ? 40 : (type === EnemyType.THROWER ? 24 : 32);
-    const bodyH = type === EnemyType.THROWER ? 56 : (type === EnemyType.CHARGER ? 40 : 48);
+    // 不同类型不同体型
+    // BOSS 特殊处理：碰撞体和小怪一样高(48)，但视觉上大两倍
+    // 这样 BOSS 和小怪站在同一地面上，不会出现高度差
+    let bodyW: number, bodyH: number, bodyOffY: number;
+    switch (type) {
+      case EnemyType.BOSS:    bodyW = 64; bodyH = 48; bodyOffY = -24; break;
+      case EnemyType.CHARGER: bodyW = 40; bodyH = 40; bodyOffY = -20; break;
+      case EnemyType.THROWER: bodyW = 24; bodyH = 56; bodyOffY = -28; break;
+      default:                bodyW = 32; bodyH = 48; bodyOffY = -24; break;
+    }
     body.setSize(bodyW, bodyH);
-    body.setOffset(-bodyW / 2, -bodyH / 2);
-    body.setDragX(400);
+    body.setOffset(-bodyW / 2, bodyOffY);
+    body.setDragX(type === EnemyType.BOSS ? 200 : 400); // BOSS 击退后恢复更快
     body.setCollideWorldBounds(true);
 
     this.enemies.add(container);
+
+    // ---- BOSS 特殊初始化 ----
+    if (type === EnemyType.BOSS) {
+      this.bossRef = enemy;
+      this.createBossHudBar();
+    }
   }
 
   private damageEnemy(enemy: Enemy, damage: number, knockbackX: number) {
     if (!enemy.alive) return;
     enemy.hp -= damage;
 
-    // 打断前摇：如果敌人正在蓄力，立刻取消攻击
-    if (enemy.state === EnemyState.WINDUP && enemy.windupIndicator) {
-      enemy.windupIndicator.destroy();
-      enemy.windupIndicator = null;
+    const body = enemy.container.body as Phaser.Physics.Arcade.Body;
+
+    if (enemy.type === EnemyType.BOSS) {
+      // ---- BOSS 霸体：被打不中断攻击，只短暂硬直 + 少量击退 ----
+      // 不打断前摇/攻击状态
+      // 只在空闲（PATROL/COOLDOWN）时才进入短硬直
+      if (enemy.state === EnemyState.PATROL || enemy.state === EnemyState.COOLDOWN) {
+        enemy.state = EnemyState.HIT;
+        enemy.stateTimer = this.time.now + this.BOSS_HIT_STAGGER; // 很短的硬直
+        body.setVelocityX(knockbackX * 0.3); // 击退力度很小（BOSS很重）
+      }
+      // 攻击中完全不打断，也不击退
+    } else {
+      // ---- 普通怪：打断前摇 + 完整硬直 ----
+      if (enemy.state === EnemyState.WINDUP && enemy.windupIndicator) {
+        enemy.windupIndicator.destroy();
+        enemy.windupIndicator = null;
+      }
+      enemy.state = EnemyState.HIT;
+      enemy.stateTimer = this.time.now + 300;
+      body.setVelocityX(knockbackX);
     }
 
-    // 进入受击硬直状态
-    enemy.state = EnemyState.HIT;
-    enemy.stateTimer = this.time.now + 300; // 300ms 硬直
-
-    const body = enemy.container.body as Phaser.Physics.Arcade.Body;
-    body.setVelocityX(knockbackX);
-
-    // 闪白
+    // 闪白（BOSS 闪红而不是变透明）
     this.tweens.add({
       targets: enemy.container,
-      alpha: 0.3,
+      alpha: enemy.type === EnemyType.BOSS ? 0.6 : 0.3,
       duration: 60,
       yoyo: true,
       repeat: 1,
@@ -969,32 +1172,46 @@ export class BattleScene extends Phaser.Scene {
       const distToPlayer = Math.abs(dx);
 
       switch (enemy.state) {
-        // ---- 巡逻：散步，发现玩家就准备攻击 ----
+        // ---- 巡逻：散步/逼近，发现玩家就准备攻击 ----
         case EnemyState.PATROL: {
-          if (Math.abs(body.velocity.x) < 5) {
-            if (enemy.facingRight) {
-              body.setVelocityX(this.ENEMY_PATROL_SPEED);
-              if (enemy.container.x >= enemy.patrolRight) enemy.facingRight = false;
+          if (enemy.type === EnemyType.BOSS) {
+            // BOSS 不巡逻，始终慢步逼近玩家
+            const dir = dx > 0 ? 1 : -1;
+            enemy.facingRight = dir > 0;
+            if (distToPlayer > 60) { // 距离太近就停下（准备攻击）
+              body.setVelocityX(dir * this.BOSS_PATROL_SPEED);
             } else {
-              body.setVelocityX(-this.ENEMY_PATROL_SPEED);
-              if (enemy.container.x <= enemy.patrolLeft) enemy.facingRight = true;
+              body.setVelocityX(0);
             }
-          }
-          // 根据类型用不同的感知范围
-          const detectRange = this.getDetectRange(enemy);
-          if (distToPlayer < detectRange) {
-            // 投掷怪特殊：玩家太近就后退而不是攻击
-            if (enemy.type === EnemyType.THROWER && distToPlayer < 80) {
-              const retreatDir = dx > 0 ? -1 : 1; // 远离玩家方向
-              body.setVelocityX(retreatDir * this.THROWER_RETREAT_SPEED);
-            } else {
+            // BOSS 感知范围很大
+            if (distToPlayer < 400) {
               this.enemyStartWindup(enemy, dx);
+            }
+          } else {
+            // 普通怪/冲锋怪/投掷怪：正常巡逻
+            if (Math.abs(body.velocity.x) < 5) {
+              if (enemy.facingRight) {
+                body.setVelocityX(this.ENEMY_PATROL_SPEED);
+                if (enemy.container.x >= enemy.patrolRight) enemy.facingRight = false;
+              } else {
+                body.setVelocityX(-this.ENEMY_PATROL_SPEED);
+                if (enemy.container.x <= enemy.patrolLeft) enemy.facingRight = true;
+              }
+            }
+            const detectRange = this.getDetectRange(enemy);
+            if (distToPlayer < detectRange) {
+              if (enemy.type === EnemyType.THROWER && distToPlayer < 80) {
+                const retreatDir = dx > 0 ? -1 : 1;
+                body.setVelocityX(retreatDir * this.THROWER_RETREAT_SPEED);
+              } else {
+                this.enemyStartWindup(enemy, dx);
+              }
             }
           }
           break;
         }
 
-        // ---- 前摇：站定不动，头顶感叹号，可被打断 ----
+        // ---- 前摇：站定不动，头顶提示，可被打断（BOSS不可打断） ----
         case EnemyState.WINDUP: {
           body.setVelocityX(0);
           if (now >= enemy.stateTimer) {
@@ -1013,36 +1230,65 @@ export class BattleScene extends Phaser.Scene {
           break;
         }
 
-        // ---- 冲锋怪高速冲向玩家 ----
+        // ---- 冲锋（冲锋怪 / BOSS 通用） ----
         case EnemyState.CHARGING: {
-          // 持续朝玩家方向冲刺
           const chargeDir = enemy.facingRight ? 1 : -1;
-          body.setVelocityX(chargeDir * this.CHARGER_CHARGE_SPEED);
+          const chargeSpeed = enemy.type === EnemyType.BOSS
+            ? this.BOSS_CHARGE_SPEED : this.CHARGER_CHARGE_SPEED;
+          const chargeDmg = enemy.type === EnemyType.BOSS
+            ? this.BOSS_CHARGE_DAMAGE : this.CHARGER_CHARGE_DAMAGE;
+          const chargeKb = enemy.type === EnemyType.BOSS
+            ? this.BOSS_CHARGE_KNOCKBACK : this.CHARGER_CHARGE_KNOCKBACK;
+          const chargeCooldown = enemy.type === EnemyType.BOSS
+            ? this.BOSS_COOLDOWN : this.CHARGER_COOLDOWN;
 
-          // 碰撞检测：撞到玩家就造成伤害
+          body.setVelocityX(chargeDir * chargeSpeed);
+
+          // 碰撞检测
           const hitDx = this.player.x - enemy.container.x;
           const hitDy = this.player.y - enemy.container.y;
-          if (Math.abs(hitDx) < 36 && Math.abs(hitDy) < 48) {
-            this.damagePlayer(this.CHARGER_CHARGE_DAMAGE, chargeDir * this.CHARGER_CHARGE_KNOCKBACK);
+          const hitRange = enemy.type === EnemyType.BOSS ? 50 : 36;
+          if (Math.abs(hitDx) < hitRange && Math.abs(hitDy) < 48) {
+            this.damagePlayer(chargeDmg, chargeDir * chargeKb);
           }
 
-          // 冲锋时间结束 → 冷却
           if (now >= enemy.stateTimer) {
             body.setVelocityX(0);
             enemy.state = EnemyState.COOLDOWN;
-            enemy.stateTimer = now + this.CHARGER_COOLDOWN;
+            enemy.stateTimer = now + chargeCooldown;
           }
           break;
         }
 
-        // ---- 投掷怪瞄准中（短暂停顿后扔东西） ----
+        // ---- 投掷怪瞄准中 ----
         case EnemyState.AIMING: {
           body.setVelocityX(0);
           if (now >= enemy.stateTimer) {
-            // 瞄准结束 → 投掷！
             this.throwerLaunchProjectile(enemy);
             enemy.state = EnemyState.COOLDOWN;
             enemy.stateTimer = now + this.THROWER_COOLDOWN;
+          }
+          break;
+        }
+
+        // ---- BOSS 跳起中（在空中，不受地面物理影响） ----
+        case EnemyState.BOSS_JUMP: {
+          body.setVelocityX(0);
+          // 跳砸逻辑由 bossJumpSlam 的 tween 控制
+          // 这里只等状态结束
+          if (now >= enemy.stateTimer) {
+            enemy.state = EnemyState.COOLDOWN;
+            enemy.stateTimer = now + this.BOSS_COOLDOWN;
+          }
+          break;
+        }
+
+        // ---- BOSS 弹幕发射中 ----
+        case EnemyState.BOSS_FIRE: {
+          body.setVelocityX(0);
+          if (now >= enemy.stateTimer) {
+            enemy.state = EnemyState.COOLDOWN;
+            enemy.stateTimer = now + this.BOSS_COOLDOWN;
           }
           break;
         }
@@ -1055,7 +1301,7 @@ export class BattleScene extends Phaser.Scene {
           break;
         }
 
-        // ---- 受击硬直：等硬直结束恢复巡逻 ----
+        // ---- 受击硬直 ----
         case EnemyState.HIT: {
           if (Math.abs(body.velocity.x) < 5 && now >= enemy.stateTimer) {
             enemy.state = EnemyState.PATROL;
@@ -1088,35 +1334,54 @@ export class BattleScene extends Phaser.Scene {
 
   /**
    * 敌人进入前摇状态（感叹号 + 停顿）
-   * 不同类型有不同的前摇时间和感叹号颜色
+   * BOSS 不可被打断（霸体），其他怪可打断
    */
   private enemyStartWindup(enemy: Enemy, dxToPlayer: number) {
     enemy.state = EnemyState.WINDUP;
     // 根据类型确定前摇时长
-    const windupTime = enemy.type === EnemyType.CHARGER
-      ? this.CHARGER_CHARGE_WINDUP
-      : (enemy.type === EnemyType.THROWER ? this.THROWER_AIM_TIME : this.ENEMY_ATTACK_WINDUP);
+    let windupTime: number;
+    if (enemy.type === EnemyType.BOSS) {
+      // BOSS 根据当前攻击序号选择前摇时间
+      const atk = enemy.attackIndex % 3;
+      windupTime = atk === 0 ? this.BOSS_CHARGE_WINDUP
+        : (atk === 1 ? this.BOSS_JUMP_WINDUP : this.BOSS_BARRAGE_WINDUP);
+    } else if (enemy.type === EnemyType.CHARGER) {
+      windupTime = this.CHARGER_CHARGE_WINDUP;
+    } else if (enemy.type === EnemyType.THROWER) {
+      windupTime = this.THROWER_AIM_TIME;
+    } else {
+      windupTime = this.ENEMY_ATTACK_WINDUP;
+    }
     enemy.stateTimer = this.time.now + windupTime;
-    // 面朝玩家
     enemy.facingRight = dxToPlayer > 0;
 
-    // 感叹号颜色随类型变化
-    const indicatorColor = enemy.type === EnemyType.CHARGER ? "#ff8800"
-      : (enemy.type === EnemyType.THROWER ? "#aa44ff" : "#ff4444");
+    // 指示器颜色和文字随类型变化
+    let indicatorColor: string, indicatorText: string;
+    if (enemy.type === EnemyType.BOSS) {
+      indicatorColor = "#ff0000";
+      const atk = enemy.attackIndex % 3;
+      indicatorText = atk === 0 ? "⚡冲锋" : (atk === 1 ? "💥跳砸" : "🔥弹幕");
+    } else if (enemy.type === EnemyType.CHARGER) {
+      indicatorColor = "#ff8800";
+      indicatorText = "!!";
+    } else if (enemy.type === EnemyType.THROWER) {
+      indicatorColor = "#aa44ff";
+      indicatorText = "✦";
+    } else {
+      indicatorColor = "#ff4444";
+      indicatorText = "!";
+    }
 
-    // 感叹号文字随类型变化
-    const indicatorText = enemy.type === EnemyType.CHARGER ? "!!"
-      : (enemy.type === EnemyType.THROWER ? "✦" : "!");
-
-    // 头顶感叹号（视觉提示：这怪要攻击了！）
     enemy.windupIndicator = this.add.text(
       enemy.container.x, enemy.container.y - 52,
       indicatorText, {
-        fontSize: "24px", color: indicatorColor, fontFamily: "Arial", fontStyle: "bold",
+        fontSize: enemy.type === EnemyType.BOSS ? "18px" : "24px",
+        color: indicatorColor,
+        fontFamily: "Arial", fontStyle: "bold",
+        backgroundColor: "#00000088", padding: { x: 4, y: 2 },
       }
     ).setOrigin(0.5);
 
-    // 感叹号闪烁效果
     this.tweens.add({
       targets: enemy.windupIndicator,
       alpha: 0.3,
@@ -1128,9 +1393,6 @@ export class BattleScene extends Phaser.Scene {
 
   /**
    * 敌人执行攻击（根据类型走不同分支）
-   * - 普通怪：近战挥砍
-   * - 冲锋怪：开始高速冲锋
-   * - 投掷怪：进入瞄准（之后扔投掷物）
    */
   private enemyPerformAttack(enemy: Enemy) {
     // 移除前摇感叹号
@@ -1141,20 +1403,17 @@ export class BattleScene extends Phaser.Scene {
 
     switch (enemy.type) {
       case EnemyType.NORMAL: {
-        // ---- 普通近战攻击（原有逻辑） ----
+        // ---- 普通近战攻击 ----
         enemy.state = EnemyState.ATTACKING;
         enemy.stateTimer = this.time.now + this.ENEMY_ATTACK_DURATION;
-
         const dir = enemy.facingRight ? 1 : -1;
         const hitX = enemy.container.x + dir * this.ENEMY_ATTACK_RANGE;
         const dx = this.player.x - hitX;
         const dy = this.player.y - enemy.container.y;
-
         if (Math.abs(dx) < 34 && Math.abs(dy) < 48) {
           this.damagePlayer(this.ENEMY_ATTACK_DAMAGE, dir * this.ENEMY_ATTACK_KNOCKBACK);
         }
-
-        // 攻击特效（红色弧线）
+        // 红色弧线特效
         const g = this.add.graphics();
         g.lineStyle(3, 0xff6644, 0.7);
         g.strokeEllipse(0, 0, 30, 40);
@@ -1167,10 +1426,9 @@ export class BattleScene extends Phaser.Scene {
       }
 
       case EnemyType.CHARGER: {
-        // ---- 冲锋怪：开始冲锋！ ----
+        // ---- 冲锋怪冲锋 ----
         enemy.state = EnemyState.CHARGING;
         enemy.stateTimer = this.time.now + this.CHARGER_CHARGE_DURATION;
-        // 冲锋特效：脚下灰尘
         for (let i = 0; i < 3; i++) {
           const dust = this.add.circle(
             enemy.container.x + (Math.random() - 0.5) * 20,
@@ -1186,19 +1444,38 @@ export class BattleScene extends Phaser.Scene {
       }
 
       case EnemyType.THROWER: {
-        // ---- 投掷怪：进入瞄准状态 ----
+        // ---- 投掷怪瞄准后投掷 ----
         enemy.state = EnemyState.AIMING;
-        enemy.stateTimer = this.time.now + 200; // 短暂瞄准后投掷
-        // 瞄准特效：法杖顶端闪光
+        enemy.stateTimer = this.time.now + 200;
         const flash = this.add.circle(
           enemy.container.x + (enemy.facingRight ? 14 : -14),
-          enemy.container.y - 24,
-          8, 0xe8d44d, 0.7
+          enemy.container.y - 24, 8, 0xe8d44d, 0.7
         );
         this.tweens.add({
           targets: flash, scale: 2, alpha: 0, duration: 200,
           onComplete: () => flash.destroy(),
         });
+        break;
+      }
+
+      case EnemyType.BOSS: {
+        // ---- BOSS 三种攻击循环 ----
+        const atk = enemy.attackIndex % 3;
+        enemy.attackIndex++; // 下次用下一种攻击
+
+        switch (atk) {
+          case 0: // 冲锋
+            enemy.state = EnemyState.CHARGING;
+            enemy.stateTimer = this.time.now + this.BOSS_CHARGE_DURATION;
+            this.cameras.main.shake(100, 0.005); // 蓄力震屏
+            break;
+          case 1: // 跳砸
+            this.bossJumpSlam(enemy);
+            break;
+          case 2: // 弹幕
+            this.bossBarrage(enemy);
+            break;
+        }
         break;
       }
     }
@@ -1217,6 +1494,7 @@ export class BattleScene extends Phaser.Scene {
 
     // 先加入物理组（组会自动创建物理体）
     this.projectiles.add(proj);
+    proj.setData("damage", this.THROWER_PROJECTILE_DAMAGE); // 投掷怪伤害
 
     // 设置物理体属性
     const projBody = proj.body as Phaser.Physics.Arcade.Body;
@@ -1249,6 +1527,187 @@ export class BattleScene extends Phaser.Scene {
       if (proj.active) proj.destroy();
       if (inner.active) inner.destroy();
     });
+  }
+
+  // ======================== BOSS 专属攻击 ========================
+
+  /**
+   * BOSS 跳砸：跳起 → 滞空 → 砸落 → 左右冲击波
+   * 跳起期间不受重力，用 Tween 控制 Y 坐标
+   */
+  private bossJumpSlam(enemy: Enemy) {
+    enemy.state = EnemyState.BOSS_JUMP;
+    const body = enemy.container.body as Phaser.Physics.Arcade.Body;
+    body.setAllowGravity(false); // 跳起时关闭重力
+
+    const origY = enemy.container.y;
+    const dir = enemy.facingRight ? 1 : -1;
+    // 跳跃目标：玩家附近（预判位置）
+    const targetX = this.player.x;
+
+    // 阶段1：跳起（300ms）
+    this.tweens.add({
+      targets: enemy.container,
+      y: origY - this.BOSS_JUMP_HEIGHT,
+      x: targetX, // 水平方向也移向玩家
+      duration: 300,
+      ease: "Power2",
+      onComplete: () => {
+        // 阶段2：滞空（200ms，给玩家反应时间）
+        this.time.delayedCall(200, () => {
+          // 阶段3：砸落（250ms）
+          this.tweens.add({
+            targets: enemy.container,
+            y: origY, // 落回地面
+            duration: 250,
+            ease: "Bounce",
+            onComplete: () => {
+              // 恢复重力
+              body.setAllowGravity(true);
+
+              // 落点伤害判定
+              const hitDx = Math.abs(this.player.x - enemy.container.x);
+              const hitDy = Math.abs(this.player.y - enemy.container.y);
+              if (hitDx < 60 && hitDy < 60) {
+                this.damagePlayer(this.BOSS_JUMP_DAMAGE, dir * this.BOSS_JUMP_KNOCKBACK);
+              }
+
+              // 震屏
+              this.cameras.main.shake(300, 0.015);
+
+              // 左右冲击波（两个沿地面扩散的半透明矩形）
+              this.bossShockwave(enemy.container.x, origY);
+
+              // 冷却
+              enemy.stateTimer = this.time.now + this.BOSS_COOLDOWN;
+              enemy.state = EnemyState.COOLDOWN;
+            },
+          });
+        });
+      },
+    });
+  }
+
+  /**
+   * BOSS 跳砸落地的冲击波（左右各一个扩散矩形 + 粒子）
+   */
+  private bossShockwave(x: number, y: number) {
+    // 左右冲击波
+    [-1, 1].forEach((dir) => {
+      const wave = this.add.rectangle(x, y - 10, 10, 30, 0xff4444, 0.7);
+      this.tweens.add({
+        targets: wave,
+        x: x + dir * 200,
+        width: 200,
+        alpha: 0,
+        duration: 400,
+        ease: "Power2",
+        onComplete: () => wave.destroy(),
+      });
+
+      // 冲击波也作为投掷物（能伤害玩家）
+      const proj = this.add.circle(x, y - 10, 8, 0xff6644, 0.5);
+      this.projectiles.add(proj);
+      proj.setData("damage", this.BOSS_JUMP_DAMAGE); // 跳砸冲击波伤害
+      const projBody = proj.body as Phaser.Physics.Arcade.Body;
+      projBody.setAllowGravity(false);
+      projBody.setVelocity(dir * this.BOSS_JUMP_SHOCKWAVE_SPEED, 0);
+      this.time.delayedCall(500, () => { if (proj.active) proj.destroy(); });
+    });
+
+    // 落地碎石
+    for (let i = 0; i < 6; i++) {
+      const debris = this.add.rectangle(
+        x + (Math.random() - 0.5) * 60, y,
+        4 + Math.random() * 4, 4 + Math.random() * 4, 0x8b6914
+      );
+      this.tweens.add({
+        targets: debris,
+        y: y - 30 - Math.random() * 40,
+        x: debris.x + (i % 2 === 0 ? 1 : -1) * (40 + Math.random() * 50),
+        alpha: 0, angle: 360, duration: 500, ease: "Bounce",
+        onComplete: () => debris.destroy(),
+      });
+    }
+  }
+
+  /**
+   * BOSS 弹幕攻击：扇形发射多颗能量球
+   */
+  private bossBarrage(enemy: Enemy) {
+    enemy.state = EnemyState.BOSS_FIRE;
+    enemy.stateTimer = this.time.now + 800; // 发射持续时间
+
+    const dir = enemy.facingRight ? 1 : -1;
+    const startX = enemy.container.x + dir * 32;
+    const startY = enemy.container.y - 20;
+
+    // 扇形发射：5颗，角度从 -30° 到 +30°
+    const count = this.BOSS_BARRAGE_COUNT;
+    for (let i = 0; i < count; i++) {
+      this.time.delayedCall(i * 120, () => { // 每颗间隔120ms
+        if (!enemy.alive) return; // BOSS 死了就不射了
+
+        // 角度：以面朝方向为基准，扇形展开
+        const spreadAngle = Phaser.Math.DegToRad(-30 + (60 * i / (count - 1)));
+        const baseAngle = dir > 0 ? 0 : Math.PI; // 0=右, π=左
+        const finalAngle = baseAngle + spreadAngle;
+
+        const vx = Math.cos(finalAngle) * this.BOSS_BARRAGE_SPEED;
+        const vy = Math.sin(finalAngle) * this.BOSS_BARRAGE_SPEED;
+
+        // 创建弹幕（红色大能量球）
+        const proj = this.add.circle(startX, startY, 8, 0xff4444, 0.9);
+        this.projectiles.add(proj);
+        proj.setData("damage", this.BOSS_BARRAGE_DAMAGE); // BOSS 弹幕伤害
+        const projBody = proj.body as Phaser.Physics.Arcade.Body;
+        projBody.setAllowGravity(false);
+        projBody.setSize(16, 16);
+        projBody.setVelocity(vx, vy);
+
+        // 3秒后自动销毁
+        this.time.delayedCall(3000, () => { if (proj.active) proj.destroy(); });
+      });
+    }
+  }
+
+  // ======================== BOSS HUD ========================
+
+  /**
+   * 创建 BOSS 专属血条（屏幕顶部居中，大血条 + 名字）
+   */
+  private createBossHudBar() {
+    const barW = 400;
+    const barH = 18;
+    const cx = 480; // 屏幕中心 X
+
+    // 背景
+    this.bossHpBarBg = this.add.rectangle(cx, 18, barW + 4, barH + 4, 0x222222)
+      .setScrollFactor(0).setDepth(10);
+    // 血条
+    this.bossHpBarFill = this.add.rectangle(cx - barW / 2, 18, barW, barH, 0xcc0000)
+      .setOrigin(0, 0.5).setScrollFactor(0).setDepth(11);
+    // 名字
+    this.bossHpLabel = this.add.text(cx, 6, "赤焰魔君", {
+      fontSize: "14px", color: "#ff4444", fontFamily: "SimHei", fontStyle: "bold",
+    }).setOrigin(0.5, 0).setScrollFactor(0).setDepth(11);
+  }
+
+  /**
+   * 每帧更新 BOSS 血条（在主 update 中调用）
+   */
+  private updateBossHud() {
+    if (!this.bossRef || !this.bossRef.alive) {
+      // BOSS 死了就隐藏血条
+      if (this.bossHpBarBg) this.bossHpBarBg.setVisible(false);
+      if (this.bossHpBarFill) this.bossHpBarFill.setVisible(false);
+      if (this.bossHpLabel) this.bossHpLabel.setVisible(false);
+      return;
+    }
+    const ratio = Math.max(0, this.bossRef.hp / this.bossRef.maxHp);
+    this.bossHpBarFill.width = 400 * ratio;
+    // 低血量变色（深红→暗红）
+    this.bossHpBarFill.setFillStyle(ratio > 0.3 ? 0xcc0000 : 0x660000);
   }
 
   private killEnemy(enemy: Enemy) {
