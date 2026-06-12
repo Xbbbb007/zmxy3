@@ -51,6 +51,7 @@ export class BattleScene extends Phaser.Scene {
   private keyD!: Phaser.Input.Keyboard.Key;
   private keyJ!: Phaser.Input.Keyboard.Key;
   private keyK!: Phaser.Input.Keyboard.Key; // 技能1：烈焰闪
+  private keyL!: Phaser.Input.Keyboard.Key; // 技能2：巨剑术
   private enemies!: Phaser.Physics.Arcade.Group;
 
   // ========== 可调参数（随便改，找手感） ==========
@@ -100,6 +101,17 @@ export class BattleScene extends Phaser.Scene {
   private readonly SKILL1_DASH_DURATION = 300;   // 冲刺持续时间(ms)
   private readonly SKILL1_RANGE = 200;           // 伤害判定距离(像素)
 
+  // 技能 2：巨剑术（L 键）
+  // 蓄力1秒 → 头顶法阵 → 巨剑冲出，范围攻击
+  private readonly SKILL2_MP_COST = 0;            // 测试阶段不耗蓝
+  private readonly SKILL2_COOLDOWN = 0;           // 测试阶段无冷却
+  private readonly SKILL2_CHARGE_TIME = 2500;     // 蓄力时间(ms)，2.5秒
+  private readonly SKILL2_DAMAGE = 60;            // 伤害（巨剑术应该很痛）
+  private readonly SKILL2_SWORD_SPEED = 800;      // 巨剑飞行速度
+  private readonly SKILL2_SWORD_RANGE = 350;      // 巨剑飞行距离(像素)
+  private readonly SKILL2_AOE_WIDTH = 80;         // 巨剑AOE宽度(像素)
+  private readonly SKILL2_ANGLE = 15;              // 巨剑向下射击角度（度数，改这一个数就行）
+
   // ===== 运行时状态 =====
   private facingRight = true;
   private jumpCount = 0;
@@ -125,6 +137,9 @@ export class BattleScene extends Phaser.Scene {
 
   // 技能冷却计时
   private skill1CooldownEnd = 0; // 技能1冷却结束时间
+  private skill2CooldownEnd = 0; // 技能2冷却结束时间
+  private isCastingSkill2 = false; // 正在蓄力巨剑术（不能移动/攻击）
+  private swordHitEnemies = new Set<Enemy>(); // 万剑归宗：已命中的敌人（防止重复扣血）
 
   constructor() {
     super({ key: "BattleScene" });
@@ -147,6 +162,9 @@ export class BattleScene extends Phaser.Scene {
     this.playerMp = this.PLAYER_MAX_MP;
     this.playerHitTimer = 0;
     this.skill1CooldownEnd = 0;
+    this.skill2CooldownEnd = 0;
+    this.isCastingSkill2 = false;
+    this.swordHitEnemies = new Set<Enemy>();
 
     // ===== 1. 背景 =====
     const sky = this.add.graphics();
@@ -211,6 +229,7 @@ export class BattleScene extends Phaser.Scene {
     this.keyD = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.D);
     this.keyJ = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.J);
     this.keyK = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.K);
+    this.keyL = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.L);
 
     this.setupDoubleTap(this.keyA, () => this.startDash(false));
     this.setupDoubleTap(this.keyD, () => this.startDash(true));
@@ -238,7 +257,7 @@ export class BattleScene extends Phaser.Scene {
     }).setScrollFactor(0);
 
     // 技能 CD 提示
-    this.add.text(175, 55, "K:烈焰闪", {
+    this.add.text(175, 55, "K:烈焰闪 L:巨剑术", {
       fontSize: "11px", color: "#f5c842", fontFamily: "Arial",
     }).setScrollFactor(0);
 
@@ -270,8 +289,8 @@ export class BattleScene extends Phaser.Scene {
       body.setDragX(600);
     }
 
-    // ---- 移动（攻击/冲刺中不响应） ----
-    if (!this.isDashing && !this.isAttacking) {
+    // ---- 移动（攻击/冲刺/蓄力中不响应） ----
+    if (!this.isDashing && !this.isAttacking && !this.isCastingSkill2) {
       if (this.keyA.isDown) body.setVelocityX(-this.MOVE_SPEED);
       else if (this.keyD.isDown) body.setVelocityX(this.MOVE_SPEED);
     }
@@ -424,6 +443,10 @@ export class BattleScene extends Phaser.Scene {
     if (Phaser.Input.Keyboard.JustDown(this.keyK)) {
       this.useSkill1_FlameDash();
     }
+    // 技能2：巨剑术（L 键）
+    if (Phaser.Input.Keyboard.JustDown(this.keyL)) {
+      this.useSkill2_GiantSword();
+    }
   }
 
   /**
@@ -498,6 +521,231 @@ export class BattleScene extends Phaser.Scene {
         duration: 400,
         delay: i * 30, // 逐个出现
         onComplete: () => flame.destroy(),
+      });
+    }
+  }
+
+  // ======================== 技能2：巨剑术 ========================
+
+  /**
+   * 技能2：巨剑术
+   * 蓄力1秒 → 法阵出现 → 巨剑从法阵中冲出 → AOE伤害
+   */
+  private useSkill2_GiantSword() {
+    const now = this.time.now;
+
+    if (this.playerMp < this.SKILL2_MP_COST) return;
+    if (now < this.skill2CooldownEnd) return;
+    if (this.isAttacking || this.isDashing || this.isCastingSkill2) return;
+
+    // 消耗 MP，进入 CD，锁定移动
+    this.playerMp -= this.SKILL2_MP_COST;
+    this.skill2CooldownEnd = now + this.SKILL2_COOLDOWN;
+    this.isCastingSkill2 = true;
+
+    const body = this.player.body as Phaser.Physics.Arcade.Body;
+    body.setVelocityX(0); // 蓄力时站定不动
+
+    // ===== 阶段1：蓄力 + 法阵出现（持续 CHARGE_TIME 毫秒） =====
+    const magicCircle = this.createMagicCircle();
+
+    // 法阵从透明渐渐亮起
+    magicCircle.setAlpha(0);
+    this.tweens.add({
+      targets: magicCircle,
+      alpha: 1,
+      scale: { from: 0.3, to: 1 },
+      duration: this.SKILL2_CHARGE_TIME * 0.8,
+      ease: "Power2",
+    });
+
+    // 法阵持续旋转
+    this.tweens.add({
+      targets: magicCircle,
+      angle: magicCircle.angle + 360,
+      duration: this.SKILL2_CHARGE_TIME,
+      ease: "Linear",
+    });
+
+    // 蓄力结束后 → 阶段2：巨剑冲出
+    this.time.delayedCall(this.SKILL2_CHARGE_TIME, () => {
+      this.isCastingSkill2 = false;
+      magicCircle.destroy();
+      this.launchGiantSword();
+    });
+  }
+
+  /**
+   * 创建法阵视觉特效（同心圆 + 放射线 + 符文）
+   */
+  private createMagicCircle(): Phaser.GameObjects.Container {
+    const dir = this.facingRight ? 1 : -1;
+    // 法阵出现在玩家头顶偏前方（朝敌人方向）
+    const cx = this.player.x + dir * 30;
+    const cy = this.player.y - 70;
+
+    const container = this.add.container(cx, cy);
+    const g = this.add.graphics();
+
+    // 外圈
+    g.lineStyle(3, 0x9b59b6, 0.9); // 紫色
+    g.strokeCircle(0, 0, 40);
+
+    // 内圈
+    g.lineStyle(2, 0xe8d44d, 0.8); // 金色
+    g.strokeCircle(0, 0, 25);
+
+    // 中心点
+    g.fillStyle(0xe8d44d, 0.6);
+    g.fillCircle(0, 0, 8);
+
+    // 六条放射线（符文效果）
+    for (let i = 0; i < 6; i++) {
+      const angle = (i / 6) * Math.PI * 2;
+      const x1 = Math.cos(angle) * 12;
+      const y1 = Math.sin(angle) * 12;
+      const x2 = Math.cos(angle) * 38;
+      const y2 = Math.sin(angle) * 38;
+      g.lineStyle(2, 0x9b59b6, 0.7);
+      g.lineBetween(x1, y1, x2, y2);
+    }
+
+    // 小三角符文（三个等距小三角）
+    for (let i = 0; i < 3; i++) {
+      const angle = (i / 3) * Math.PI * 2;
+      const cx2 = Math.cos(angle) * 32;
+      const cy2 = Math.sin(angle) * 32;
+      g.fillStyle(0xe8d44d, 0.5);
+      g.fillTriangle(cx2 - 5, cy2 - 4, cx2 + 5, cy2 - 4, cx2, cy2 + 5);
+    }
+
+    container.add(g);
+
+    // 倾斜朝向敌人（椭圆化 + 旋转）
+    container.setScale(1, 0.5); // 压扁成椭圆，模拟透视倾斜
+    container.setAngle(dir > 0 ? -15 : 15); // 微微倾斜
+
+    // 发光效果（半透明大圆做光晕）
+    const glow = this.add.circle(0, 0, 55, 0x9b59b6, 0.15);
+    container.addAt(glow, 0); // 插在底层
+
+    return container;
+  }
+
+  /**
+   * 巨剑从法阵位置冲出，飞向面朝方向
+   */
+  private launchGiantSword() {
+    this.swordHitEnemies.clear();
+    const dir = this.facingRight ? 1 : -1;
+    const startX = this.player.x + dir * 30;
+    const startY = this.player.y - 70; // 从法阵高度出发（头顶）
+
+    // 向下射击：用三角函数计算终点
+    const angleRad = Phaser.Math.DegToRad(this.SKILL2_ANGLE);
+    const endX = startX + dir * Math.cos(angleRad) * this.SKILL2_SWORD_RANGE;
+    const endY = startY + Math.sin(angleRad) * this.SKILL2_SWORD_RANGE;
+
+    // 画巨剑（用多边形）
+    const sword = this.add.container(startX, startY);
+    const g = this.add.graphics();
+
+    // 剑身（菱形，很长）
+    g.fillStyle(0xd4af37, 1); // 金色
+    g.fillPoints([
+      new Phaser.Geom.Point(0, -60),   // 剑尖
+      new Phaser.Geom.Point(12, -10),  // 右上
+      new Phaser.Geom.Point(6, 20),    // 右下
+      new Phaser.Geom.Point(-6, 20),   // 左下
+      new Phaser.Geom.Point(-12, -10), // 左上
+    ], true);
+
+    // 剑身中线（发光）
+    g.lineStyle(2, 0xffffff, 0.6);
+    g.lineBetween(0, -55, 0, 15);
+
+    // 剑柄
+    g.fillStyle(0x8b4513, 1); // 棕色
+    g.fillRect(-4, 20, 8, 15);
+    // 护手
+    g.fillStyle(0xd4af37, 1);
+    g.fillRect(-14, 18, 28, 5);
+
+    sword.add(g);
+
+    // 巨剑朝向：水平 90° + 向下角度 = 实际旋转角度
+    sword.setAngle(dir > 0 ? 90 + this.SKILL2_ANGLE : -(90 + this.SKILL2_ANGLE));
+    sword.setScale(0.5);
+
+    // 巨剑飞出动画（沿 30° 斜下方飞行）
+    this.tweens.add({
+      targets: sword,
+      x: endX,
+      y: endY,
+      scale: 1.2,
+      duration: (this.SKILL2_SWORD_RANGE / this.SKILL2_SWORD_SPEED) * 1000,
+      ease: "Power1",
+      // 飞行过程中持续检测伤害
+      onUpdate: () => {
+        this.swordHitCheck(sword.x, sword.y, dir);
+      },
+      onComplete: () => {
+        // 到达终点后淡出消失
+        this.tweens.add({
+          targets: sword,
+          alpha: 0,
+          scale: 0.3,
+          duration: 200,
+          onComplete: () => sword.destroy(),
+        });
+      },
+    });
+
+    // 剑身拖尾光效（跟随飞行路径）
+    this.swordTrail(startX, startY, endX, endY, dir);
+  }
+
+  /**
+   * 巨剑飞行路径上的伤害检测
+   * 已经命中过的敌人不会重复受伤
+   */
+  private swordHitCheck(swordX: number, swordY: number, dir: number) {
+    this.enemies.getChildren().forEach((obj) => {
+      const enemy = (obj as Phaser.GameObjects.Container).getData("enemy") as Enemy;
+      if (!enemy?.alive) return;
+      if (this.swordHitEnemies.has(enemy)) return; // 已经打过了
+
+      const dx = enemy.container.x - swordX;
+      const dy = enemy.container.y - swordY;
+
+      // AOE 判定：水平方向在剑前方一定范围内，垂直距离小于 AOE 宽度
+      if (Math.abs(dy) < this.SKILL2_AOE_WIDTH / 2 && Math.abs(dx) < 50) {
+        this.damageEnemy(enemy, this.SKILL2_DAMAGE, dir * 350);
+        this.swordHitEnemies.add(enemy);
+      }
+    });
+  }
+
+  /**
+   * 巨剑飞行的拖尾光效
+   */
+  private swordTrail(startX: number, startY: number, endX: number, endY: number, dir: number) {
+    const steps = 12;
+    for (let i = 0; i < steps; i++) {
+      const t = i / steps;
+      const x = startX + (endX - startX) * t;
+      const y = startY + (endY - startY) * t;
+
+      const particle = this.add.circle(x, y, 6 + Math.random() * 6, 0xd4af37, 0.5);
+
+      this.tweens.add({
+        targets: particle,
+        alpha: 0,
+        scale: 2,
+        y: y - 10 - Math.random() * 10,
+        duration: 300 + Math.random() * 200,
+        delay: i * 40,
+        onComplete: () => particle.destroy(),
       });
     }
   }
