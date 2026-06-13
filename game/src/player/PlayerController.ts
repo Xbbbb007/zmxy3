@@ -24,10 +24,13 @@ export class PlayerController {
   private jumpCount = 0;
   private _isDashing = false;       // 技能冲刺中（由技能设置，PlayerController 不覆盖速度）
   private _isRunning = false;       // 奔跑中（双击触发）
+  private _runDirection = 0;        // 奔跑方向：1=右, -1=左
 
-  // ---- 双击检测（用 DOM 原生事件，绕过 Phaser 键盘系统，最可靠） ----
-  private lastReleaseTimeLeft = 0;  // 上次松开左方向键的时间戳
-  private lastReleaseTimeRight = 0; // 上次松开右方向键的时间戳
+  // ---- 双击检测 ----
+  private lastPressTimeA = 0;  // 上次按下A的时间戳
+  private lastPressTimeD = 0;  // 上次按下D的时间戳
+  private lastWasDownA = false; // 上一帧A是否按下
+  private lastWasDownD = false; // 上一帧D是否按下
 
   // ========== 键盘 ==========
   private cursors: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -51,36 +54,6 @@ export class PlayerController {
     this.cursors = scene.input.keyboard!.createCursorKeys();
     this.keyA = scene.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.A);
     this.keyD = scene.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.D);
-
-    // ---- 双击检测：用 DOM 原生 keyup 事件记录松开时刻 ----
-    // 不依赖 Phaser 的键盘事件系统，直接监听 window 的 keyup
-    // 这样无论 Phaser 内部怎么处理，DOM 事件一定能捕获到
-    window.addEventListener("keyup", (e: KeyboardEvent) => {
-      if (e.code === "KeyA") {
-        this.lastReleaseTimeLeft = performance.now();
-      } else if (e.code === "KeyD") {
-        this.lastReleaseTimeRight = performance.now();
-      }
-    });
-
-    window.addEventListener("keydown", (e: KeyboardEvent) => {
-      if (e.code === "KeyA") {
-        const gap = performance.now() - this.lastReleaseTimeLeft;
-        if (gap < this.DOUBLE_TAP_WINDOW) {
-          this._isRunning = true;
-        } else if (!this.keyD.isDown) {
-          // 只有没按住另一个方向键时才取消（避免误取消）
-          this._isRunning = false;
-        }
-      } else if (e.code === "KeyD") {
-        const gap = performance.now() - this.lastReleaseTimeRight;
-        if (gap < this.DOUBLE_TAP_WINDOW) {
-          this._isRunning = true;
-        } else if (!this.keyA.isDown) {
-          this._isRunning = false;
-        }
-      }
-    });
   }
 
   /**
@@ -90,8 +63,11 @@ export class PlayerController {
     this._facingRight = true;
     this.jumpCount = 0;
     this._isRunning = false;
-    this.lastReleaseTimeLeft = 0;
-    this.lastReleaseTimeRight = 0;
+    this._runDirection = 0;
+    this.lastPressTimeA = 0;
+    this.lastPressTimeD = 0;
+    this.lastWasDownA = false;
+    this.lastWasDownD = false;
   }
 
   /**
@@ -105,23 +81,58 @@ export class PlayerController {
     const body = this.player.body as Phaser.Physics.Arcade.Body;
     const { space } = this.cursors;
 
-    // ---- 奔跑终止条件（每帧检测） ----
+    // ---- 双击检测（每帧检测"刚按下"的瞬间） ----
+    const isDownA = this.keyA.isDown;
+    const isDownD = this.keyD.isDown;
 
+    // A键：检测"这一帧按下，上一帧没按"
+    if (isDownA && !this.lastWasDownA) {
+      const now = performance.now();
+      const gap = now - this.lastPressTimeA;
+      console.log(`[A按下] gap=${gap.toFixed(0)}ms, window=${this.DOUBLE_TAP_WINDOW}ms`);
+      if (gap < this.DOUBLE_TAP_WINDOW) {
+        this._isRunning = true;
+        this._runDirection = -1;
+        console.log(`>>> 双击A触发奔跑！`);
+      }
+      this.lastPressTimeA = now;
+    }
+
+    // D键：检测"这一帧按下，上一帧没按"
+    if (isDownD && !this.lastWasDownD) {
+      const now = performance.now();
+      const gap = now - this.lastPressTimeD;
+      console.log(`[D按下] gap=${gap.toFixed(0)}ms, window=${this.DOUBLE_TAP_WINDOW}ms`);
+      if (gap < this.DOUBLE_TAP_WINDOW) {
+        this._isRunning = true;
+        this._runDirection = 1;
+        console.log(`>>> 双击D触发奔跑！`);
+      }
+      this.lastPressTimeD = now;
+    }
+
+    this.lastWasDownA = isDownA;
+    this.lastWasDownD = isDownD;
+
+    // ---- 奔跑终止条件 ----
     // 松开所有方向键 → 停止奔跑
-    if (!this.keyA.isDown && !this.keyD.isDown) {
+    if (!isDownA && !isDownD) {
+      if (this._isRunning) {
+        console.log(`[松开所有键] 停止奔跑`);
+      }
       this._isRunning = false;
     }
 
-    // 离地 → 停止奔跑（奔跑是地面专属）
+    // 离地 → 停止奔跑
     if (!body.touching.down) {
       this._isRunning = false;
     }
 
-    // 反向按键 → 停止奔跑
+    // 反向按键 → 停止奔跑（用记录的方向，不用速度）
     if (this._isRunning) {
-      const runningRight = body.velocity.x > 0;
-      if ((runningRight && this.keyA.isDown && !this.keyD.isDown) ||
-          (!runningRight && this.keyD.isDown && !this.keyA.isDown)) {
+      if ((this._runDirection === 1 && isDownA && !isDownD) ||
+          (this._runDirection === -1 && isDownD && !isDownA)) {
+        console.log(`[反向按键] 停止奔跑`);
         this._isRunning = false;
       }
     }
@@ -129,9 +140,9 @@ export class PlayerController {
     // ---- 移动（攻击/蓄力/技能冲刺中不响应） ----
     if (!isAttacking && !isCasting && !this._isDashing) {
       const speed = this._isRunning ? this.RUN_SPEED : this.MOVE_SPEED;
-      if (this.keyA.isDown) {
+      if (isDownA) {
         body.setVelocityX(-speed);
-      } else if (this.keyD.isDown) {
+      } else if (isDownD) {
         body.setVelocityX(speed);
       } else {
         // 松开方向键 → 立即停止
