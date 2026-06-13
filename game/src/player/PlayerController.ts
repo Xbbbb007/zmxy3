@@ -25,9 +25,9 @@ export class PlayerController {
   private _isDashing = false;       // 技能冲刺中（由技能设置，PlayerController 不覆盖速度）
   private _isRunning = false;       // 奔跑中（双击触发）
 
-  // ---- 双击检测（通过键盘事件追踪，比轮询 isDown 更可靠） ----
-  private lastReleaseTimeA = 0;     // 上次松开 A 的时间戳
-  private lastReleaseTimeD = 0;     // 上次松开 D 的时间戳
+  // ---- 双击检测（用 DOM 原生事件，绕过 Phaser 键盘系统，最可靠） ----
+  private lastReleaseTimeLeft = 0;  // 上次松开左方向键的时间戳
+  private lastReleaseTimeRight = 0; // 上次松开右方向键的时间戳
 
   // ========== 键盘 ==========
   private cursors: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -52,12 +52,35 @@ export class PlayerController {
     this.keyA = scene.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.A);
     this.keyD = scene.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.D);
 
-    // 用键盘事件追踪按键松开（比轮询 isDown 更可靠，不会漏帧）
-    this.keyA.on("up", () => { this.lastReleaseTimeA = scene.time.now; });
-    this.keyD.on("up", () => { this.lastReleaseTimeD = scene.time.now; });
+    // ---- 双击检测：用 DOM 原生 keyup 事件记录松开时刻 ----
+    // 不依赖 Phaser 的键盘事件系统，直接监听 window 的 keyup
+    // 这样无论 Phaser 内部怎么处理，DOM 事件一定能捕获到
+    window.addEventListener("keyup", (e: KeyboardEvent) => {
+      if (e.code === "KeyA") {
+        this.lastReleaseTimeLeft = performance.now();
+      } else if (e.code === "KeyD") {
+        this.lastReleaseTimeRight = performance.now();
+      }
+    });
 
-    // 用 JustDown 检测按下瞬间（Phaser 内置边沿检测）
-    // 在 update() 中通过 Phaser.Input.Keyboard.JustDown() 调用
+    window.addEventListener("keydown", (e: KeyboardEvent) => {
+      if (e.code === "KeyA") {
+        const gap = performance.now() - this.lastReleaseTimeLeft;
+        if (gap < this.DOUBLE_TAP_WINDOW) {
+          this._isRunning = true;
+        } else if (!this.keyD.isDown) {
+          // 只有没按住另一个方向键时才取消（避免误取消）
+          this._isRunning = false;
+        }
+      } else if (e.code === "KeyD") {
+        const gap = performance.now() - this.lastReleaseTimeRight;
+        if (gap < this.DOUBLE_TAP_WINDOW) {
+          this._isRunning = true;
+        } else if (!this.keyA.isDown) {
+          this._isRunning = false;
+        }
+      }
+    });
   }
 
   /**
@@ -67,8 +90,8 @@ export class PlayerController {
     this._facingRight = true;
     this.jumpCount = 0;
     this._isRunning = false;
-    this.lastReleaseTimeA = 0;
-    this.lastReleaseTimeD = 0;
+    this.lastReleaseTimeLeft = 0;
+    this.lastReleaseTimeRight = 0;
   }
 
   /**
@@ -82,21 +105,7 @@ export class PlayerController {
     const body = this.player.body as Phaser.Physics.Arcade.Body;
     const { space } = this.cursors;
 
-    // ---- 双击检测（JustDown 检测按下瞬间，配合 up 事件记录的松开时间） ----
-    if (Phaser.Input.Keyboard.JustDown(this.keyA)) {
-      if (time - this.lastReleaseTimeA < this.DOUBLE_TAP_WINDOW) {
-        this._isRunning = true;
-      } else {
-        this._isRunning = false;
-      }
-    }
-    if (Phaser.Input.Keyboard.JustDown(this.keyD)) {
-      if (time - this.lastReleaseTimeD < this.DOUBLE_TAP_WINDOW) {
-        this._isRunning = true;
-      } else {
-        this._isRunning = false;
-      }
-    }
+    // ---- 奔跑终止条件（每帧检测） ----
 
     // 松开所有方向键 → 停止奔跑
     if (!this.keyA.isDown && !this.keyD.isDown) {
