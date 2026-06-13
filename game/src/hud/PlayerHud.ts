@@ -4,7 +4,7 @@
  * 把玩家界面上所有"显示信息"的东西从 BattleScene 里拆出来：
  * - HP 血条（左上角绿色/红色条）
  * - MP 蓝条（血条下方蓝色条）
- * - 技能图标 + CD 冷却遮罩（蓝条右侧的两个小方框）
+ * - 技能图标（蓝条右侧的两个小方框，缺蓝时变暗）
  *
  * 为什么拆出来？
  * BattleScene 已经管了移动、攻击、敌人AI、BOSS……再管 UI 显示就太臃肿了。
@@ -16,13 +16,11 @@ export class PlayerHud {
   private hpBarFill: Phaser.GameObjects.Rectangle;   // 血条填充（宽度随 HP 变化）
   private mpBarFill: Phaser.GameObjects.Rectangle;   // 蓝条填充（宽度随 MP 变化）
 
-  // 技能1 CD 遮罩（盖在图标上半透明黑色矩形 + 倒计时文字）
-  private skill1CdOverlay: Phaser.GameObjects.Rectangle;
-  private skill1CdText: Phaser.GameObjects.Text;
+  // 技能1 缺蓝遮罩
+  private skill1DimOverlay: Phaser.GameObjects.Rectangle;
 
-  // 技能2 CD 遮罩
-  private skill2CdOverlay: Phaser.GameObjects.Rectangle;
-  private skill2CdText: Phaser.GameObjects.Text;
+  // 技能2 缺蓝遮罩
+  private skill2DimOverlay: Phaser.GameObjects.Rectangle;
 
   /**
    * @param scene         场景引用（用 this.add.xxx 创建游戏对象）
@@ -53,22 +51,16 @@ export class PlayerHud {
       fontSize: "12px", color: "#ffffff", fontFamily: "Arial",
     }).setScrollFactor(0);
 
-    // ===== 3. 技能图标 + CD 遮罩 =====
+    // ===== 3. 技能图标 + 缺蓝遮罩 =====
     // 技能1图标（K:烈焰闪，橙色）
     this.createSkillIcon(185, 42, "K", 0xff6600);
-    this.skill1CdOverlay = this.scene.add.rectangle(185, 42, 28, 28, 0x000000, 0)
-      .setScrollFactor(0); // 默认 alpha=0（没 CD 时不显示）
-    this.skill1CdText = this.scene.add.text(185, 42, "", {
-      fontSize: "14px", color: "#ffffff", fontFamily: "Arial", fontStyle: "bold",
-    }).setOrigin(0.5).setScrollFactor(0).setVisible(false);
+    this.skill1DimOverlay = this.scene.add.rectangle(185, 42, 28, 28, 0x000000, 0)
+      .setScrollFactor(0); // 默认 alpha=0（有蓝时不显示）
 
     // 技能2图标（L:巨剑术，金色）
     this.createSkillIcon(220, 42, "L", 0xd4af37);
-    this.skill2CdOverlay = this.scene.add.rectangle(220, 42, 28, 28, 0x000000, 0)
+    this.skill2DimOverlay = this.scene.add.rectangle(220, 42, 28, 28, 0x000000, 0)
       .setScrollFactor(0);
-    this.skill2CdText = this.scene.add.text(220, 42, "", {
-      fontSize: "14px", color: "#ffffff", fontFamily: "Arial", fontStyle: "bold",
-    }).setOrigin(0.5).setScrollFactor(0).setVisible(false);
 
     // ===== 4. 操作提示文字 =====
     this.scene.add.text(20, 75,
@@ -105,57 +97,27 @@ export class PlayerHud {
   }
 
   /**
-   * 更新技能 CD 显示（每帧调用）
+   * 更新技能可用性显示（每帧调用）
    *
-   * 显示逻辑：
-   * - CD 中     → 遮罩变暗 + 显示倒计时秒数
-   * - 没 CD 但缺蓝 → 浅遮罩（提示不可用）
-   * - 技能就绪   → 隐藏遮罩
+   * 只显示缺蓝提示：MP 不够时图标变暗
    *
-   * @param now              当前时间 (scene.time.now)
-   * @param mp               当前 MP（判断是否缺蓝）
-   * @param skill1CdEnd      技能1冷却结束时间
-   * @param skill2CdEnd      技能2冷却结束时间
+   * @param mp  当前 MP
    */
-  updateSkillCd(
-    now: number,
-    mp: number,
-    skill1CdEnd: number,
-    skill2CdEnd: number,
-  ) {
+  updateSkillAvailability(mp: number) {
     // ---- 技能1 ----
-    const s1Remain = Math.max(0, skill1CdEnd - now);
-    if (s1Remain > 0) {
-      // CD 中：遮罩 + 倒计时
-      this.skill1CdOverlay.setFillStyle(0x000000, 0.6);
-      this.skill1CdOverlay.setVisible(true);
-      this.skill1CdText.setText(Math.ceil(s1Remain / 1000).toString());
-      this.skill1CdText.setVisible(true);
-    } else if (mp < this.skill1MpCost) {
-      // 缺蓝：浅遮罩，无倒计时
-      this.skill1CdOverlay.setFillStyle(0x000000, 0.4);
-      this.skill1CdOverlay.setVisible(true);
-      this.skill1CdText.setVisible(false);
+    if (mp < this.skill1MpCost) {
+      this.skill1DimOverlay.setFillStyle(0x000000, 0.4);
+      this.skill1DimOverlay.setVisible(true);
     } else {
-      // 就绪：全隐藏
-      this.skill1CdOverlay.setVisible(false);
-      this.skill1CdText.setVisible(false);
+      this.skill1DimOverlay.setVisible(false);
     }
 
-    // ---- 技能2（同样逻辑） ----
-    const s2Remain = Math.max(0, skill2CdEnd - now);
-    if (s2Remain > 0) {
-      this.skill2CdOverlay.setFillStyle(0x000000, 0.6);
-      this.skill2CdOverlay.setVisible(true);
-      this.skill2CdText.setText(Math.ceil(s2Remain / 1000).toString());
-      this.skill2CdText.setVisible(true);
-    } else if (mp < this.skill2MpCost) {
-      this.skill2CdOverlay.setFillStyle(0x000000, 0.4);
-      this.skill2CdOverlay.setVisible(true);
-      this.skill2CdText.setVisible(false);
+    // ---- 技能2 ----
+    if (mp < this.skill2MpCost) {
+      this.skill2DimOverlay.setFillStyle(0x000000, 0.4);
+      this.skill2DimOverlay.setVisible(true);
     } else {
-      this.skill2CdOverlay.setVisible(false);
-      this.skill2CdText.setVisible(false);
+      this.skill2DimOverlay.setVisible(false);
     }
   }
 

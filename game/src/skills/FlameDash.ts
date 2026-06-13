@@ -30,14 +30,10 @@ export interface SkillContext {
 export class FlameDash {
   // ========== 可调参数（改这里的数字调手感） ==========
   readonly mpCost = 20;          // MP 消耗
-  readonly cooldownMs = 5000;    // 冷却时间(ms)
   readonly damage = 30;          // 技能伤害
   readonly dashSpeed = 600;      // 冲刺速度（比普通移动快一倍）
   readonly dashDuration = 300;   // 冲刺持续时间(ms)
   readonly range = 200;          // 伤害判定距离(像素)
-
-  // 运行时状态（BattleScene 从这里读 CD）
-  cooldownEnd = 0;
 
   /**
    * 尝试释放烈焰闪
@@ -49,12 +45,6 @@ export class FlameDash {
    */
   execute(ctx: SkillContext): boolean {
     const now = ctx.scene.time.now;
-
-    // ---- 前置检查 ----
-    if (now < this.cooldownEnd) return false; // CD 中
-
-    // 进入 CD
-    this.cooldownEnd = now + this.cooldownMs;
 
     const body = ctx.player.body as Phaser.Physics.Arcade.Body;
     const dir = ctx.facingRight ? 1 : -1;

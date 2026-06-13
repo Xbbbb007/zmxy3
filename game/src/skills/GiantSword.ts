@@ -25,7 +25,6 @@ export interface SkillContext {
 export class GiantSword {
   // ========== 可调参数 ==========
   readonly mpCost = 30;              // MP 消耗
-  readonly cooldownMs = 8000;        // 冷却时间(ms)
   readonly chargeTime = 2500;        // 蓄力时间(ms)
   readonly damage = 60;              // 伤害（大招，很痛）
   readonly swordSpeed = 800;         // 巨剑飞行速度
@@ -34,7 +33,6 @@ export class GiantSword {
   readonly angle = 15;               // 向下射击角度(度)
 
   // 运行时状态
-  cooldownEnd = 0;
   isCasting = false;  // 蓄力中 = true（BattleScene 用来禁止移动）
 
   // 已命中敌人集合（防止同一个敌人在飞行过程中被重复扣血）
@@ -45,13 +43,9 @@ export class GiantSword {
    * @returns true = 成功进入蓄力（BattleScene 扣 MP）
    */
   execute(ctx: SkillContext): boolean {
-    const now = ctx.scene.time.now;
-
-    if (now < this.cooldownEnd) return false; // CD 中
     if (this.isCasting) return false;         // 正在蓄力中
 
-    // 进入 CD + 蓄力状态
-    this.cooldownEnd = now + this.cooldownMs;
+    // 进入蓄力状态
     this.isCasting = true;
 
     const body = ctx.player.body as Phaser.Physics.Arcade.Body;

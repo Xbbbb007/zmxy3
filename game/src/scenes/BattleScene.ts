@@ -229,8 +229,8 @@ export class BattleScene extends Phaser.Scene {
       this.bossHud.update(this.enemyManager.bossRef);
     }
 
-    // ---- 技能 CD 显示 ----
-    this.hud.updateSkillCd(this.time.now, this.playerMp, this.skill1.cooldownEnd, this.skill2.cooldownEnd);
+    // ---- 技能 CD 显示（已移除CD，仅显示缺蓝提示） ----
+    this.hud.updateSkillAvailability(this.playerMp);
 
     // ---- 胜利检测 ----
     const allDead = this.enemyManager.enemies.getChildren().every((obj) => {
