@@ -4,7 +4,7 @@
  * 把玩家界面上所有"显示信息"的东西从 BattleScene 里拆出来：
  * - HP 血条（左上角绿色/红色条）
  * - MP 蓝条（血条下方蓝色条）
- * - 技能图标（蓝条右侧的两个小方框，缺蓝时变暗）
+ * - 技能图标（蓝条右侧的小方框，缺蓝时变暗）
  *
  * 为什么拆出来？
  * BattleScene 已经管了移动、攻击、敌人AI、BOSS……再管 UI 显示就太臃肿了。
@@ -22,15 +22,20 @@ export class PlayerHud {
   // 技能2 缺蓝遮罩
   private skill2DimOverlay: Phaser.GameObjects.Rectangle;
 
+  // 技能3 缺蓝遮罩
+  private skill3DimOverlay: Phaser.GameObjects.Rectangle;
+
   /**
    * @param scene         场景引用（用 this.add.xxx 创建游戏对象）
    * @param skill1MpCost  技能1 的 MP 消耗（用于判断"缺蓝"时显示遮罩）
    * @param skill2MpCost  技能2 的 MP 消耗
+   * @param skill3MpCost  技能3 的 MP 消耗
    */
   constructor(
     private scene: Phaser.Scene,
     private skill1MpCost: number,
     private skill2MpCost: number,
+    private skill3MpCost: number,
   ) {
     // ===== 1. 玩家血条（固定在屏幕左上角） =====
     // 背景（灰色底条）
@@ -62,9 +67,14 @@ export class PlayerHud {
     this.skill2DimOverlay = this.scene.add.rectangle(220, 42, 28, 28, 0x000000, 0)
       .setScrollFactor(0);
 
+    // 技能3图标（I:天降神踏，绿色毒系）
+    this.createSkillIcon(255, 42, "I", 0x44cc44);
+    this.skill3DimOverlay = this.scene.add.rectangle(255, 42, 28, 28, 0x000000, 0)
+      .setScrollFactor(0);
+
     // ===== 4. 操作提示文字 =====
     this.scene.add.text(20, 75,
-      "A D 移动 | 双击冲刺 | 空格 跳跃 | J 攻击 | K 烈焰闪 | L 巨剑术",
+      "A D 移动 | 双击冲刺 | 空格 跳跃 | J 攻击 | K 烈焰闪 | L 巨剑术 | I 天降神踏",
       {
         fontSize: "13px", color: "#ffffff", fontFamily: "Arial",
         backgroundColor: "#00000088", padding: { x: 8, y: 4 },
@@ -118,6 +128,14 @@ export class PlayerHud {
       this.skill2DimOverlay.setVisible(true);
     } else {
       this.skill2DimOverlay.setVisible(false);
+    }
+
+    // ---- 技能3 ----
+    if (mp < this.skill3MpCost) {
+      this.skill3DimOverlay.setFillStyle(0x000000, 0.4);
+      this.skill3DimOverlay.setVisible(true);
+    } else {
+      this.skill3DimOverlay.setVisible(false);
     }
   }
 

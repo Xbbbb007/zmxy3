@@ -19,6 +19,7 @@
  * - hud/BossHud.ts              → BOSS 屏幕顶部血条
  * - skills/FlameDash.ts         → 技能1：烈焰闪
  * - skills/GiantSword.ts        → 技能2：巨剑术
+ * - skills/DivineStamp.ts       → 技能3：天降神踏
  * - types/LevelConfig.ts        → 关卡数据定义
  */
 
@@ -28,6 +29,7 @@ import { PlayerHud } from "../hud/PlayerHud";
 import { BossHud } from "../hud/BossHud";
 import { FlameDash } from "../skills/FlameDash";
 import { GiantSword } from "../skills/GiantSword";
+import { DivineStamp } from "../skills/DivineStamp";
 import { EnemyManager } from "../enemies/EnemyManager";
 import { PlayerController } from "../player/PlayerController";
 import { PlayerCombat } from "../player/PlayerCombat";
@@ -52,8 +54,10 @@ export class BattleScene extends Phaser.Scene {
   // ========== 技能 ==========
   private keyK!: Phaser.Input.Keyboard.Key;
   private keyL!: Phaser.Input.Keyboard.Key;
+  private keyI!: Phaser.Input.Keyboard.Key;
   private skill1 = new FlameDash();
   private skill2 = new GiantSword();
+  private skill3 = new DivineStamp();
 
   // ========== 玩家状态 ==========
   private playerHp = 100;
@@ -90,6 +94,7 @@ export class BattleScene extends Phaser.Scene {
     this.playerHitTimer = 0;
     this.skill1 = new FlameDash();
     this.skill2 = new GiantSword();
+    this.skill3 = new DivineStamp();
 
     // ===== 1. 背景（颜色来自关卡配置） =====
     const sky = this.add.graphics();
@@ -171,6 +176,7 @@ export class BattleScene extends Phaser.Scene {
     // ===== 9. 技能键位 =====
     this.keyK = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.K);
     this.keyL = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.L);
+    this.keyI = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.I);
 
     // ===== 10. 敌人（从配置生成，HP 乘以难度系数） =====
     cfg.enemies.forEach((spawn) => {
@@ -180,7 +186,7 @@ export class BattleScene extends Phaser.Scene {
 
     // ===== 11. HUD =====
     this.bossHud = cfg.bossName ? new BossHud(this, cfg.bossName) : null;
-    this.hud = new PlayerHud(this, this.skill1.mpCost, this.skill2.mpCost);
+    this.hud = new PlayerHud(this, this.skill1.mpCost, this.skill2.mpCost, this.skill3.mpCost);
 
     // ===== 12. 关卡名称提示（淡出） =====
     const levelTitle = this.add.text(480, 200, cfg.name, {
@@ -206,11 +212,12 @@ export class BattleScene extends Phaser.Scene {
     if (this.isPlayerDead || this.isVictory) return;
 
     // ---- 模块更新 ----
-    this.controller.update(this.time.now, this.combat.isAttacking, this.skill2.isCasting);
+    const anyCasting = this.skill2.isCasting || this.skill3.isCasting;
+    this.controller.update(this.time.now, this.combat.isAttacking, anyCasting);
     this.combat.update(
       this.time.now,
       this.controller.isRunning,
-      this.skill2.isCasting,
+      anyCasting,
       this.enemyManager.enemies,
       (enemy, damage, knockbackX) => this.enemyManager.damageEnemy(enemy, damage, knockbackX),
       this.controller.facingRight,
@@ -258,6 +265,13 @@ export class BattleScene extends Phaser.Scene {
       if (this.playerMp >= this.skill2.mpCost) {
         if (this.skill2.execute(this.buildSkillCtx())) {
           this.playerMp -= this.skill2.mpCost;
+        }
+      }
+    }
+    if (Phaser.Input.Keyboard.JustDown(this.keyI)) {
+      if (this.playerMp >= this.skill3.mpCost) {
+        if (this.skill3.execute(this.buildSkillCtx())) {
+          this.playerMp -= this.skill3.mpCost;
         }
       }
     }
