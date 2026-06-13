@@ -37,7 +37,6 @@ export class DivineStamp {
   readonly poisonTickMs = 500;       // 毒伤间隔(ms)
   readonly poisonDuration = 5000;    // 毒池持续时间(ms)
   readonly aoeRadius = 130;          // AOE 判定半径(像素)
-  readonly targetOffsetX = 120;      // 法阵中心在玩家前方多远
   readonly circleDisplayScale = 0.28;  // 法阵图片显示缩放
 
   // 运行时状态
@@ -52,8 +51,7 @@ export class DivineStamp {
     this.isCasting = true;
 
     const scene = ctx.scene;
-    const dir = ctx.facingRight ? 1 : -1;
-    const targetX = ctx.player.x + dir * this.targetOffsetX;
+    const targetX = ctx.player.x;
     const targetY = ctx.player.y;
 
     // ===== 阶段1：法阵浮现 =====
@@ -71,8 +69,8 @@ export class DivineStamp {
   // ======================== 法阵特效 ========================
 
   /**
-   * 法阵图片 + 透视压缩 + 旋转淡入
-   * 出现在目标位置的地面上
+   * 法阵图片 + 透视压缩 + 斗罗大陆式缓慢旋转
+   * 出现在玩家脚下，从地面浮现，庄严缓转
    */
   private showMagicCircle(
     scene: Phaser.Scene, cx: number, cy: number,
@@ -86,25 +84,36 @@ export class DivineStamp {
     circle.setBlendMode(Phaser.BlendModes.ADD); // 叠加发光
     container.add(circle);
 
-    // 底部光晕
-    const glow = scene.add.ellipse(0, 0, 60, 20, 0xff8800, 0.3);
+    // 外圈光晕（脉冲呼吸效果）
+    const glow = scene.add.ellipse(0, 0, 80, 28, 0xff8800, 0.25);
     container.add(glow);
+    scene.tweens.add({
+      targets: glow,
+      alpha: { from: 0.15, to: 0.4 },
+      scaleX: { from: 0.9, to: 1.1 },
+      scaleY: { from: 0.9, to: 1.1 },
+      duration: 600,
+      yoyo: true,
+      repeat: -1,
+      ease: "Sine.easeInOut",
+    });
 
-    // 淡入 + 放大
+    // 从地面浮现（放大 + 淡入）
     scene.tweens.add({
       targets: container,
       alpha: 1,
-      scaleX: { from: 0.3, to: 1 },
-      scaleY: { from: 0.3, to: 1 },
-      duration: this.chargeTime * 0.7,
+      scaleX: { from: 0.2, to: 1 },
+      scaleY: { from: 0.2, to: 1 },
+      duration: this.chargeTime * 0.6,
       ease: "Power2",
     });
 
-    // 旋转
+    // 斗罗大陆式缓慢旋转（持续不停，每 2.5 秒一圈）
     scene.tweens.add({
       targets: container,
       angle: 360,
-      duration: this.chargeTime,
+      duration: 2500,
+      repeat: -1,
       ease: "Linear",
     });
 
@@ -185,8 +194,7 @@ export class DivineStamp {
     // ---- 屏幕震动 ----
     scene.cameras.main.shake(300, 0.02);
 
-    // ---- AOE 伤害 ----
-    const dir = ctx.facingRight ? 1 : -1;
+    // ---- AOE 伤害（以法阵为中心向外击退） ----
     ctx.enemies.getChildren().forEach((obj) => {
       const enemy = (obj as Phaser.GameObjects.Container).getData("enemy") as Enemy;
       if (!enemy?.alive) return;
