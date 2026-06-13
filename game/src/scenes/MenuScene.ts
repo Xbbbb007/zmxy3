@@ -2,7 +2,7 @@
  * 主菜单场景（MenuScene）
  *
  * 游戏的第一个画面，显示标题和"开始游戏"按钮。
- * 点击按钮后跳转到战斗场景（BattleScene）。
+ * 点击按钮后跳转到关卡选择画面（LevelSelectScene）。
  *
  * 目前用纯文字 + 矩形做按钮，后期可以换成美术素材。
  */
@@ -41,9 +41,9 @@ export class MenuScene extends Phaser.Scene {
     btnBg.on("pointerover", () => btnBg.setFillStyle(0xff6b6b));
     btnBg.on("pointerout", () => btnBg.setFillStyle(0xe63946));
 
-    // 点击后跳转到战斗场景
+    // 点击后跳转到关卡选择画面
     btnBg.on("pointerdown", () => {
-      this.scene.start("BattleScene");
+      this.scene.start("LevelSelectScene");
     });
   }
 }

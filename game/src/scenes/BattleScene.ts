@@ -1,11 +1,15 @@
 /**
  * 战斗场景（BattleScene）— 纯调度中心
  *
+ * 数据驱动：所有地图、敌人、BOSS 配置从 LevelConfig 读取。
+ * 通过 scene.start("BattleScene", { levelId: "xxx" }) 传入关卡 ID。
+ *
  * 职责：
- * 1. 创建所有模块实例（玩家、敌人、HUD、技能）
- * 2. 每帧调用各模块 update()
- * 3. 管理玩家 HP/MP 和受击逻辑
- * 4. 胜利/死亡画面
+ * 1. 根据关卡配置创建地图（背景、地面、平台）
+ * 2. 根据关卡配置生成敌人
+ * 3. 每帧调用各模块 update()
+ * 4. 管理玩家 HP/MP 和受击逻辑
+ * 5. 胜利/死亡画面 + 关卡流转
  *
  * 已拆出的模块：
  * - player/PlayerController.ts  → 移动、跳跃、冲刺、朝向
@@ -15,6 +19,7 @@
  * - hud/BossHud.ts              → BOSS 屏幕顶部血条
  * - skills/FlameDash.ts         → 技能1：烈焰闪
  * - skills/GiantSword.ts        → 技能2：巨剑术
+ * - types/LevelConfig.ts        → 关卡数据定义
  */
 
 import { drawPlayer } from "../entities/PlayerGraphics";
@@ -26,6 +31,7 @@ import { GiantSword } from "../skills/GiantSword";
 import { EnemyManager } from "../enemies/EnemyManager";
 import { PlayerController } from "../player/PlayerController";
 import { PlayerCombat } from "../player/PlayerCombat";
+import { LevelConfig, LEVELS, getLevelById } from "../types/LevelConfig";
 
 export class BattleScene extends Phaser.Scene {
   // ========== 核心对象 ==========
@@ -33,15 +39,15 @@ export class BattleScene extends Phaser.Scene {
   private projectiles!: Phaser.Physics.Arcade.Group;
 
   // ========== 模块实例 ==========
-  private controller!: PlayerController;   // 移动/跳跃/冲刺
-  private combat!: PlayerCombat;           // 攻击连招
-  private enemyManager!: EnemyManager;     // 敌人系统
-  private hud!: PlayerHud;                 // 玩家 HUD
-  private bossHud!: BossHud;              // BOSS HUD
+  private controller!: PlayerController;
+  private combat!: PlayerCombat;
+  private enemyManager!: EnemyManager;
+  private hud!: PlayerHud;
+  private bossHud!: BossHud | null;
 
-  // ========== 地图参数 ==========
-  private readonly MAP_WIDTH = 3000;
-  private readonly MAP_HEIGHT = 540;
+  // ========== 关卡配置 ==========
+  private levelConfig!: LevelConfig;
+  private levelIndex = 0;  // 当前关卡在 LEVELS 数组中的索引
 
   // ========== 技能 ==========
   private keyK!: Phaser.Input.Keyboard.Key;
@@ -64,7 +70,18 @@ export class BattleScene extends Phaser.Scene {
     super({ key: "BattleScene" });
   }
 
+  /**
+   * 接收场景启动参数（关卡 ID）
+   */
+  init(data: { levelId?: string }) {
+    const levelId = data.levelId || LEVELS[0].id;
+    this.levelConfig = getLevelById(levelId) || LEVELS[0];
+    this.levelIndex = LEVELS.indexOf(this.levelConfig);
+  }
+
   create() {
+    const cfg = this.levelConfig;
+
     // ===== 0. 重置运行时状态 =====
     this.isPlayerDead = false;
     this.isVictory = false;
@@ -74,42 +91,41 @@ export class BattleScene extends Phaser.Scene {
     this.skill1 = new FlameDash();
     this.skill2 = new GiantSword();
 
-    // ===== 1. 背景 =====
+    // ===== 1. 背景（颜色来自关卡配置） =====
     const sky = this.add.graphics();
-    sky.fillGradientStyle(0x4a90d9, 0x4a90d9, 0x87ceeb, 0x87ceeb, 1);
-    sky.fillRect(0, 0, this.MAP_WIDTH, this.MAP_HEIGHT);
+    sky.fillGradientStyle(cfg.skyTopColor, cfg.skyTopColor, cfg.skyBottomColor, cfg.skyBottomColor, 1);
+    sky.fillRect(0, 0, cfg.mapWidth, cfg.mapHeight);
     sky.setScrollFactor(0.3);
 
+    // 装饰性云朵/椭圆
     [
       [200, 60, 120, 30], [600, 90, 80, 20], [1100, 50, 100, 25],
       [1700, 80, 90, 22], [2300, 65, 110, 28],
     ].forEach(([x, y, w, h]) => {
-      this.add.ellipse(x, y, w, h, 0xffffff, 0.6).setScrollFactor(0.2);
+      if (x < cfg.mapWidth) {
+        this.add.ellipse(x, y, w, h, cfg.cloudColor, 0.4).setScrollFactor(0.2);
+      }
     });
 
-    // ===== 2. 地面 + 平台 =====
+    // ===== 2. 地面 + 平台（颜色和布局来自配置） =====
     const groundGroup = this.physics.add.staticGroup();
 
-    const ground = this.add.rectangle(this.MAP_WIDTH / 2, 480, this.MAP_WIDTH, 40, 0x5c4033);
-    ground.setStrokeStyle(2, 0x3d2b1f);
+    const ground = this.add.rectangle(cfg.mapWidth / 2, 480, cfg.mapWidth, 40, cfg.groundColor);
+    ground.setStrokeStyle(2, cfg.groundStroke);
     groundGroup.add(ground);
 
-    [
-      { x: 500, y: 380, w: 150 }, { x: 900, y: 320, w: 120 },
-      { x: 1400, y: 360, w: 180 }, { x: 1900, y: 300, w: 130 },
-      { x: 2500, y: 350, w: 160 },
-    ].forEach(({ x, y, w }) => {
-      const p = this.add.rectangle(x, y, w, 20, 0x6b8e23);
-      p.setStrokeStyle(2, 0x4a6b15);
+    cfg.platforms.forEach(({ x, y, w }) => {
+      const p = this.add.rectangle(x, y, w, 20, cfg.platformColor);
+      p.setStrokeStyle(2, cfg.platformStroke);
       groundGroup.add(p);
     });
 
-    // ===== 3. 物理世界边界（必须在创建任何物理体之前设置） =====
-    this.physics.world.setBounds(0, 0, this.MAP_WIDTH, this.MAP_HEIGHT);
+    // ===== 3. 物理世界边界 =====
+    this.physics.world.setBounds(0, 0, cfg.mapWidth, cfg.mapHeight);
 
-    // ===== 4. 投掷物组（远程怪的弹药） =====
+    // ===== 4. 投掷物组 =====
     this.projectiles = this.physics.add.group({
-      allowGravity: false, // 投掷物不受重力影响
+      allowGravity: false,
     });
 
     // ===== 5. 玩家 =====
@@ -149,22 +165,39 @@ export class BattleScene extends Phaser.Scene {
     });
 
     // ===== 8. 相机 =====
-    this.cameras.main.setBounds(0, 0, this.MAP_WIDTH, this.MAP_HEIGHT);
+    this.cameras.main.setBounds(0, 0, cfg.mapWidth, cfg.mapHeight);
     this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
 
     // ===== 9. 技能键位 =====
     this.keyK = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.K);
     this.keyL = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.L);
 
-    // ===== 10. 敌人 =====
-    this.enemyManager.spawnEnemy(350, 432, 100, EnemyType.NORMAL);
-    this.enemyManager.spawnEnemy(700, 432, 120, EnemyType.CHARGER);
-    this.enemyManager.spawnEnemy(1100, 432, 80, EnemyType.THROWER);
-    this.enemyManager.spawnEnemy(2000, 432, 500, EnemyType.BOSS);
+    // ===== 10. 敌人（从配置生成，HP 乘以难度系数） =====
+    cfg.enemies.forEach((spawn) => {
+      const hp = Math.round(spawn.hp * cfg.enemyHpMultiplier);
+      this.enemyManager.spawnEnemy(spawn.x, spawn.y, hp, spawn.type);
+    });
 
     // ===== 11. HUD =====
-    this.bossHud = new BossHud(this, "赤焰魔君");
+    this.bossHud = cfg.bossName ? new BossHud(this, cfg.bossName) : null;
     this.hud = new PlayerHud(this, this.skill1.mpCost, this.skill2.mpCost);
+
+    // ===== 12. 关卡名称提示（淡出） =====
+    const levelTitle = this.add.text(480, 200, cfg.name, {
+      fontSize: "40px", color: "#ffffff", fontFamily: "SimHei", fontStyle: "bold",
+    }).setOrigin(0.5).setScrollFactor(0).setAlpha(1).setDepth(20);
+
+    const levelDesc = this.add.text(480, 250, cfg.description, {
+      fontSize: "18px", color: "#cccccc", fontFamily: "SimHei",
+    }).setOrigin(0.5).setScrollFactor(0).setAlpha(1).setDepth(20);
+
+    this.tweens.add({
+      targets: [levelTitle, levelDesc],
+      alpha: 0,
+      duration: 800,
+      delay: 1500,
+      onComplete: () => { levelTitle.destroy(); levelDesc.destroy(); },
+    });
   }
 
   // ======================== 每帧更新（调度中心） ========================
@@ -192,7 +225,9 @@ export class BattleScene extends Phaser.Scene {
 
     // ---- 敌人 AI + BOSS 血条 ----
     this.enemyManager.update();
-    this.bossHud.update(this.enemyManager.bossRef);
+    if (this.bossHud) {
+      this.bossHud.update(this.enemyManager.bossRef);
+    }
 
     // ---- 技能 CD 显示 ----
     this.hud.updateSkillCd(this.time.now, this.playerMp, this.skill1.cooldownEnd, this.skill2.cooldownEnd);
@@ -209,22 +244,9 @@ export class BattleScene extends Phaser.Scene {
 
   // ======================== 技能系统 ========================
 
-  /**
-   * 技能输入处理（每帧调用）
-   *
-   * BattleScene 只负责：
-   * 1. 检测按键
-   * 2. 检查 MP 够不够
-   * 3. 检查攻击/冲刺中能不能用
-   * 4. 调用 skill.execute() 执行技能
-   * 5. execute 返回 true 就扣 MP
-   *
-   * 技能的具体逻辑（伤害、特效、CD）都在各自的类里。
-   */
   private handleSkillInput() {
     if (this.combat.isAttacking) return;
 
-    // 技能1：烈焰闪（K 键）
     if (Phaser.Input.Keyboard.JustDown(this.keyK)) {
       if (this.playerMp >= this.skill1.mpCost) {
         if (this.skill1.execute(this.buildSkillCtx())) {
@@ -232,7 +254,6 @@ export class BattleScene extends Phaser.Scene {
         }
       }
     }
-    // 技能2：巨剑术（L 键）
     if (Phaser.Input.Keyboard.JustDown(this.keyL)) {
       if (this.playerMp >= this.skill2.mpCost) {
         if (this.skill2.execute(this.buildSkillCtx())) {
@@ -242,10 +263,6 @@ export class BattleScene extends Phaser.Scene {
     }
   }
 
-  /**
-   * 构建技能执行上下文
-   * 把 BattleScene 里技能需要的东西打包成一个对象传进去
-   */
   private buildSkillCtx() {
     return {
       scene: this,
@@ -260,30 +277,19 @@ export class BattleScene extends Phaser.Scene {
     };
   }
 
-
-
-  // 敌人系统已全部移到 enemies/EnemyManager.ts
-
   // ======================== 玩家受击 ========================
 
-  /**
-   * 玩家受到伤害
-   * 有无敌时间防止连续掉血
-   */
   private damagePlayer(damage: number, knockbackX: number) {
-    // 无敌期间不受伤害
     if (this.time.now < this.playerHitTimer) return;
 
     this.playerHp -= damage;
     if (this.playerHp < 0) this.playerHp = 0;
 
-    // 设置无敌时间
     this.playerHitTimer = this.time.now + this.PLAYER_HIT_INVINCIBLE;
 
     const body = this.player.body as Phaser.Physics.Arcade.Body;
     body.setVelocityX(knockbackX);
 
-    // 受伤闪烁
     this.tweens.add({
       targets: this.player,
       alpha: 0.3,
@@ -292,7 +298,6 @@ export class BattleScene extends Phaser.Scene {
       repeat: 2,
     });
 
-    // 伤害飘字
     const dmgText = this.add.text(
       this.player.x, this.player.y - 40,
       `-${damage}`,
@@ -307,17 +312,19 @@ export class BattleScene extends Phaser.Scene {
       onComplete: () => dmgText.destroy(),
     });
 
-    // 更新 HUD 血条
     this.hud.updateHp(this.playerHp, this.playerMaxHp);
 
-    // 死亡判定
     if (this.playerHp <= 0) {
       this.playerDeath();
     }
   }
 
+  // ======================== 胜利画面 ========================
+
   /**
-   * 胜利画面：显示"胜利"，按 R 重新开始
+   * 胜利画面
+   * - 如果还有下一关 → 显示"下一关"按钮
+   * - 如果是最后一关 → 显示"全部通关"
    */
   private showVictory() {
     this.isVictory = true;
@@ -325,55 +332,107 @@ export class BattleScene extends Phaser.Scene {
     const body = this.player.body as Phaser.Physics.Arcade.Body;
     body.setVelocity(0, 0);
 
-    // 半透明遮罩
     this.add.rectangle(480, 270, 960, 540, 0x000000, 0.5).setScrollFactor(0);
 
-    // "胜利！"
-    this.add.text(480, 210, "胜利！", {
+    this.add.text(480, 180, "胜利！", {
       fontSize: "56px", color: "#f5c842", fontFamily: "Arial", fontStyle: "bold",
     }).setOrigin(0.5).setScrollFactor(0);
 
-    this.add.text(480, 280, "所有敌人已被消灭", {
-      fontSize: "20px", color: "#ffffff", fontFamily: "Arial",
+    this.add.text(480, 240, `${this.levelConfig.name} — 通过`, {
+      fontSize: "20px", color: "#ffffff", fontFamily: "SimHei",
     }).setOrigin(0.5).setScrollFactor(0);
 
-    this.add.text(480, 320, "按 R 重新开始", {
-      fontSize: "18px", color: "#aaaaaa", fontFamily: "Arial",
-    }).setOrigin(0.5).setScrollFactor(0);
+    // 判断是否有下一关
+    const nextLevel = LEVELS[this.levelIndex + 1];
 
-    this.input.keyboard!.once("keydown-R", () => {
-      this.scene.restart();
+    if (nextLevel) {
+      // ---- 下一关按钮 ----
+      const nextBtn = this.add.rectangle(480, 310, 200, 44, 0xe63946)
+        .setInteractive({ useHandCursor: true }).setScrollFactor(0);
+      const nextText = this.add.text(480, 310, `下一关：${nextLevel.name.split(" · ")[1]}`, {
+        fontSize: "16px", color: "#ffffff", fontFamily: "SimHei",
+      }).setOrigin(0.5).setScrollFactor(0);
+
+      nextBtn.on("pointerover", () => nextBtn.setFillStyle(0xff6b6b));
+      nextBtn.on("pointerout", () => nextBtn.setFillStyle(0xe63946));
+      nextBtn.on("pointerdown", () => {
+        this.scene.start("BattleScene", { levelId: nextLevel.id });
+      });
+
+      // 重玩当前关
+      this.add.text(480, 365, "按 R 重玩本关", {
+        fontSize: "14px", color: "#888888", fontFamily: "SimHei",
+      }).setOrigin(0.5).setScrollFactor(0);
+
+    } else {
+      // ---- 全部通关 ----
+      this.add.text(480, 310, "恭喜！所有关卡通关！", {
+        fontSize: "22px", color: "#f5c842", fontFamily: "SimHei", fontStyle: "bold",
+      }).setOrigin(0.5).setScrollFactor(0);
+
+      this.add.text(480, 350, "取经之路，就此展开……", {
+        fontSize: "16px", color: "#cccccc", fontFamily: "SimHei",
+      }).setOrigin(0.5).setScrollFactor(0);
+    }
+
+    // 按 R 重玩当前关
+    this.input.keyboard!.on("keydown-R", () => {
+      this.scene.start("BattleScene", { levelId: this.levelConfig.id });
     });
+
+    // 按 ESC 返回选关
+    this.input.keyboard!.on("keydown-ESC", () => {
+      this.scene.start("LevelSelectScene");
+    });
+
+    this.add.text(480, 400, "ESC 返回选关", {
+      fontSize: "14px", color: "#666666", fontFamily: "SimHei",
+    }).setOrigin(0.5).setScrollFactor(0);
   }
 
-  /**
-   * 玩家死亡：显示"你死了"，按 R 重新开始
-   */
+  // ======================== 死亡画面 ========================
+
   private playerDeath() {
     this.isPlayerDead = true;
 
     const body = this.player.body as Phaser.Physics.Arcade.Body;
     body.setVelocity(0, 0);
 
-    // 半透明遮罩
     const overlay = this.add.rectangle(
       this.cameras.main.scrollX + 480,
       this.cameras.main.scrollY + 270,
       960, 540, 0x000000, 0.6
     ).setScrollFactor(0);
 
-    // "你死了"
-    const deathText = this.add.text(480, 220, "你死了", {
+    this.add.text(480, 200, "你死了", {
       fontSize: "48px", color: "#ff4444", fontFamily: "Arial", fontStyle: "bold",
     }).setOrigin(0.5).setScrollFactor(0);
 
-    const restartText = this.add.text(480, 290, "按 R 重新开始", {
-      fontSize: "20px", color: "#ffffff", fontFamily: "Arial",
+    // 重试按钮
+    const retryBtn = this.add.rectangle(480, 280, 180, 44, 0xe63946)
+      .setInteractive({ useHandCursor: true }).setScrollFactor(0);
+    this.add.text(480, 280, "重新挑战", {
+      fontSize: "18px", color: "#ffffff", fontFamily: "SimHei",
     }).setOrigin(0.5).setScrollFactor(0);
 
-    // 按 R 重新开始
-    this.input.keyboard!.once("keydown-R", () => {
-      this.scene.restart(); // 重启当前场景，所有状态重置
+    retryBtn.on("pointerover", () => retryBtn.setFillStyle(0xff6b6b));
+    retryBtn.on("pointerout", () => retryBtn.setFillStyle(0xe63946));
+    retryBtn.on("pointerdown", () => {
+      this.scene.start("BattleScene", { levelId: this.levelConfig.id });
     });
+
+    // 按 R 重试
+    this.input.keyboard!.on("keydown-R", () => {
+      this.scene.start("BattleScene", { levelId: this.levelConfig.id });
+    });
+
+    // 按 ESC 返回选关
+    this.input.keyboard!.on("keydown-ESC", () => {
+      this.scene.start("LevelSelectScene");
+    });
+
+    this.add.text(480, 340, "R 重试 | ESC 返回选关", {
+      fontSize: "14px", color: "#888888", fontFamily: "SimHei",
+    }).setOrigin(0.5).setScrollFactor(0);
   }
 }

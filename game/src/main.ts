@@ -9,6 +9,7 @@
 import Phaser from "phaser";
 import { BootScene } from "./scenes/BootScene";
 import { MenuScene } from "./scenes/MenuScene";
+import { LevelSelectScene } from "./scenes/LevelSelectScene";
 import { BattleScene } from "./scenes/BattleScene";
 
 const config: Phaser.Types.Core.GameConfig = {
@@ -24,7 +25,7 @@ const config: Phaser.Types.Core.GameConfig = {
       debug: false, // 关闭物理碰撞框显示（开发调试时可改回 true）
     },
   },
-  scene: [BootScene, MenuScene, BattleScene], // 场景列表：启动 → 菜单 → 战斗
+  scene: [BootScene, MenuScene, LevelSelectScene, BattleScene], // 场景列表：启动 → 菜单 → 选关 → 战斗
 };
 
 new Phaser.Game(config);
