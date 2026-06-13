@@ -4,17 +4,15 @@
  * 技能3（I 键）：大范围 AOE + 毒池持续伤害
  *
  * 施放流程：
- * 1. 蓄力阶段（CHARGE_TIME）：脚下法阵浮现，放大 + 旋转 + 发光
+ * 1. 蓄力阶段（CHARGE_TIME）：脚下法阵浮现（代码绘制的六芒星法阵）
  * 2. 踩踏阶段（STOMP_DURATION）：金色巨脚从天而降，砸向法阵中心
  * 3. 冲击瞬间：屏幕震动 + 冲击波扩散 + AOE 伤害
  * 4. 毒池阶段（POISON_DURATION）：绿色毒气笼罩法阵区域，
  *    范围内的敌人每 POISON_TICK 受到一次毒伤
- *
- * 法阵图片：assets/skills/magic_circle.png（1024×1024）
- * 用 setScale(1, 0.35) 做纵向压缩，模拟地面透视效果
  */
 
 import { Enemy } from "../types/EnemyTypes";
+import { MagicCircle } from "./MagicCircle";
 
 /** 和 FlameDash / GiantSword 共用的上下文接口 */
 export interface SkillContext {
@@ -69,55 +67,38 @@ export class DivineStamp {
   // ======================== 法阵特效 ========================
 
   /**
-   * 法阵图片 + 透视压缩 + 斗罗大陆式缓慢旋转
-   * 出现在玩家脚下，从地面浮现，庄严缓转
+   * 代码绘制的六芒星法阵（三层差速旋转 + 光晕）
+   * 出现在玩家脚下，从地面浮现
    */
   private showMagicCircle(
     scene: Phaser.Scene, cx: number, cy: number,
-  ): Phaser.GameObjects.Container {
-    const container = scene.add.container(cx, cy);
+  ): { destroy: () => void } {
+    // 用代码绘制的动态法阵（火色方案）
+    const mc = new MagicCircle(scene, cx, cy, 0.35, "fire");
+    const sprite = mc.getSprite();
+    sprite.setAlpha(0);
 
-    // 法阵图片（纵向压缩 → 地面透视）
-    const circle = scene.add.image(0, 0, "magic_circle");
-    circle.setScale(this.circleDisplayScale, this.circleDisplayScale * 0.35);
-    circle.setAlpha(0);
-    circle.setBlendMode(Phaser.BlendModes.ADD); // 叠加发光
-    container.add(circle);
-
-    // 外圈光晕（脉冲呼吸效果）
-    const glow = scene.add.ellipse(0, 0, 80, 28, 0xff8800, 0.25);
-    container.add(glow);
+    // 从地面浮现
     scene.tweens.add({
-      targets: glow,
-      alpha: { from: 0.15, to: 0.4 },
-      scaleX: { from: 0.9, to: 1.1 },
-      scaleY: { from: 0.9, to: 1.1 },
-      duration: 600,
-      yoyo: true,
-      repeat: -1,
-      ease: "Sine.easeInOut",
-    });
-
-    // 从地面浮现（放大 + 淡入）
-    scene.tweens.add({
-      targets: container,
+      targets: sprite,
       alpha: 1,
-      scaleX: { from: 0.2, to: 1 },
-      scaleY: { from: 0.2, to: 1 },
       duration: this.chargeTime * 0.6,
       ease: "Power2",
     });
 
-    // 斗罗大陆式缓慢旋转（持续不停，每 2.5 秒一圈）
-    scene.tweens.add({
-      targets: container,
-      angle: 360,
-      duration: 2500,
-      repeat: -1,
-      ease: "Linear",
-    });
+    // 每帧驱动法阵动画
+    const updateListener = (_time: number, delta: number) => {
+      mc.update(delta);
+    };
+    scene.events.on("update", updateListener);
 
-    return container;
+    // 返回可销毁对象，同时清理 update 监听
+    return {
+      destroy: () => {
+        scene.events.off("update", updateListener);
+        mc.destroy();
+      },
+    };
   }
 
   // ======================== 巨脚踩踏 ========================
@@ -275,35 +256,27 @@ export class DivineStamp {
   private createPoisonZone(ctx: SkillContext, cx: number, cy: number) {
     const scene = ctx.scene;
 
-    // ---- 毒池底图（绿色法阵残影） ----
-    const poisonCircle = scene.add.container(cx, cy);
+    // ---- 毒池底图（绿色代码绘制法阵残影） ----
+    const poisonMc = new MagicCircle(scene, cx, cy, 0.35, "poison");
+    const poisonSprite = poisonMc.getSprite();
+    poisonSprite.setAlpha(0.35);
 
-    const magicImg = scene.add.image(0, 0, "magic_circle");
-    magicImg.setScale(this.circleDisplayScale, this.circleDisplayScale * 0.35);
-    magicImg.setTint(0x00ff00); // 染绿
-    magicImg.setAlpha(0.35);
-    magicImg.setBlendMode(Phaser.BlendModes.ADD);
-    poisonCircle.add(magicImg);
+    // 每帧驱动毒池法阵动画
+    const poisonUpdateListener = (_time: number, delta: number) => {
+      poisonMc.update(delta);
+    };
+    scene.events.on("update", poisonUpdateListener);
 
     // 绿色椭圆光环
-    const glow = scene.add.ellipse(0, 0, this.aoeRadius * 1.6, 30, 0x00ff00, 0.2);
-    poisonCircle.add(glow);
-
-    // 缓慢旋转
-    scene.tweens.add({
-      targets: poisonCircle,
-      angle: 360,
-      duration: 4000,
-      repeat: -1,
-      ease: "Linear",
-    });
+    const glow = scene.add.ellipse(cx, cy, this.aoeRadius * 1.6, 30, 0x00ff00, 0.2);
 
     // ---- 毒气粒子（持续生成） ----
+    let poisonActive = true;
     const particleTimer = scene.time.addEvent({
       delay: 180,
       loop: true,
       callback: () => {
-        if (!poisonCircle.active) return;
+        if (!poisonActive) return;
         const px = cx + (Math.random() - 0.5) * this.aoeRadius * 1.4;
         const py = cy;
         const particle = scene.add.circle(
@@ -394,15 +367,20 @@ export class DivineStamp {
 
     // ---- 5 秒后消散 ----
     scene.time.delayedCall(this.poisonDuration, () => {
+      poisonActive = false;
       particleTimer.remove();
       dotTimer.remove();
+      scene.events.off("update", poisonUpdateListener);
 
       // 淡出动画
       scene.tweens.add({
-        targets: poisonCircle,
+        targets: [poisonSprite, glow],
         alpha: 0,
         duration: 500,
-        onComplete: () => poisonCircle.destroy(),
+        onComplete: () => {
+          poisonMc.destroy();
+          glow.destroy();
+        },
       });
     });
   }

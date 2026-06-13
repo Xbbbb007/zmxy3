@@ -12,8 +12,7 @@ export class BootScene extends Phaser.Scene {
   }
 
   preload() {
-    // 法阵图片（天降神踏技能用）
-    this.load.image("magic_circle", "assets/skills/magic_circle.png");
+    // 资源预加载（法阵已改为代码绘制，无需加载图片）
   }
 
   create() {
