@@ -15,12 +15,21 @@ import { drawPlayer } from "../entities/PlayerGraphics";
 export class PlayerController {
   // ========== 可调参数（改数字调手感！） ==========
   readonly MOVE_SPEED = 300;        // 移动速度
+  readonly RUN_SPEED = 500;         // 奔跑速度（双击触发）
   readonly JUMP_SPEED = -400;       // 跳跃力度（负数=向上）
+  readonly DOUBLE_TAP_WINDOW = 300; // 双击判定窗口(ms)
 
   // ========== 运行时状态 ==========
   private _facingRight = true;
   private jumpCount = 0;
   private _isDashing = false;       // 技能冲刺中（由技能设置，PlayerController 不覆盖速度）
+  private _isRunning = false;       // 奔跑中（双击触发）
+
+  // ---- 双击检测 ----
+  private lastReleaseTimeA = 0;     // 上次松开 A 的时间
+  private lastReleaseTimeD = 0;     // 上次松开 D 的时间
+  private wasDownA = false;         // 上一帧 A 是否按下（用于检测松开）
+  private wasDownD = false;         // 上一帧 D 是否按下
 
   // ========== 键盘 ==========
   private cursors: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -34,6 +43,7 @@ export class PlayerController {
   // ========== 公开只读 getter ==========
   get facingRight(): boolean { return this._facingRight; }
   get isDashing(): boolean { return this._isDashing; }
+  get isRunning(): boolean { return this._isRunning; }
 
   constructor(scene: Phaser.Scene, player: Phaser.GameObjects.Container) {
     this.scene = scene;
@@ -51,6 +61,11 @@ export class PlayerController {
   reset() {
     this._facingRight = true;
     this.jumpCount = 0;
+    this._isRunning = false;
+    this.lastReleaseTimeA = 0;
+    this.lastReleaseTimeD = 0;
+    this.wasDownA = false;
+    this.wasDownD = false;
   }
 
   /**
@@ -64,12 +79,64 @@ export class PlayerController {
     const body = this.player.body as Phaser.Physics.Arcade.Body;
     const { space } = this.cursors;
 
+    // ---- 双击检测（检测松开 → 再按下的间隔） ----
+    const aDown = this.keyA.isDown;
+    const dDown = this.keyD.isDown;
+
+    // A 键：检测松开事件
+    if (this.wasDownA && !aDown) {
+      this.lastReleaseTimeA = time;
+    }
+    // D 键：检测松开事件
+    if (this.wasDownD && !dDown) {
+      this.lastReleaseTimeD = time;
+    }
+
+    // A 键按下瞬间：判断是否在双击窗口内
+    if (!this.wasDownA && aDown) {
+      if (time - this.lastReleaseTimeA < this.DOUBLE_TAP_WINDOW) {
+        this._isRunning = true;
+      } else {
+        this._isRunning = false; // 单击左 → 取消奔跑
+      }
+    }
+    // D 键按下瞬间：判断是否在双击窗口内
+    if (!this.wasDownD && dDown) {
+      if (time - this.lastReleaseTimeD < this.DOUBLE_TAP_WINDOW) {
+        this._isRunning = true;
+      } else {
+        this._isRunning = false; // 单击右 → 取消奔跑
+      }
+    }
+
+    // 松开所有方向键 → 停止奔跑
+    if (!aDown && !dDown) {
+      this._isRunning = false;
+    }
+
+    // 离地 → 停止奔跑（奔跑是地面专属）
+    if (!body.touching.down) {
+      this._isRunning = false;
+    }
+
+    // 反向按键 → 停止奔跑（跑着跑着按反方向不能继续跑）
+    if (this._isRunning) {
+      const runningRight = body.velocity.x > 0;
+      if ((runningRight && aDown && !dDown) || (!runningRight && dDown && !aDown)) {
+        this._isRunning = false;
+      }
+    }
+
+    this.wasDownA = aDown;
+    this.wasDownD = dDown;
+
     // ---- 移动（攻击/蓄力/技能冲刺中不响应） ----
     if (!isAttacking && !isCasting && !this._isDashing) {
-      if (this.keyA.isDown) {
-        body.setVelocityX(-this.MOVE_SPEED);
-      } else if (this.keyD.isDown) {
-        body.setVelocityX(this.MOVE_SPEED);
+      const speed = this._isRunning ? this.RUN_SPEED : this.MOVE_SPEED;
+      if (aDown) {
+        body.setVelocityX(-speed);
+      } else if (dDown) {
+        body.setVelocityX(speed);
       } else {
         // 松开方向键 → 立即停止
         body.setVelocityX(0);

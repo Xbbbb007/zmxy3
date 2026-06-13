@@ -176,7 +176,7 @@ export class BattleScene extends Phaser.Scene {
     this.controller.update(this.time.now, this.combat.isAttacking, this.skill2.isCasting);
     this.combat.update(
       this.time.now,
-      false, // 奔跑功能已暂时移除
+      this.controller.isRunning,
       this.skill2.isCasting,
       this.enemyManager.enemies,
       (enemy, damage, knockbackX) => this.enemyManager.damageEnemy(enemy, damage, knockbackX),
