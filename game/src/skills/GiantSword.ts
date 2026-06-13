@@ -55,7 +55,8 @@ export class GiantSword {
     this.isCasting = true;
 
     const body = ctx.player.body as Phaser.Physics.Arcade.Body;
-    body.setVelocity(0, 0); // 蓄力时完全定住（X + Y）
+    body.setVelocity(0, 0);           // 清零速度
+    body.setAllowGravity(false);      // 关闭重力，空中施法定住不掉
 
     // ===== 阶段1：法阵出现（蓄力 CHARGE_TIME 毫秒） =====
     const magicCircle = this.createMagicCircle(ctx);
@@ -81,6 +82,8 @@ export class GiantSword {
     // ===== 阶段2：蓄力结束 → 巨剑冲出 =====
     ctx.scene.time.delayedCall(this.chargeTime, () => {
       this.isCasting = false;
+      const castBody = ctx.player.body as Phaser.Physics.Arcade.Body;
+      castBody.setAllowGravity(true); // 恢复重力
       magicCircle.destroy();
       this.launchGiantSword(ctx);
     });
