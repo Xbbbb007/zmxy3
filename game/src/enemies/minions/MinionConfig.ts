@@ -70,9 +70,9 @@ export const THROWER = {
   /** 投掷物伤害 */
   PROJECTILE_DAMAGE: 8,
   /** 后退速度（玩家靠近时往后跑） */
-  RETREAT_SPEED: 80,
+  RETREAT_SPEED: 55,
   /** 太近判定阈值（低于此距离触发后退） */
-  RETREAT_THRESHOLD: 80,
+  RETREAT_THRESHOLD: 65,
   /** 巡逻速度 */
   PATROL_SPEED: 60,
   /** 巡逻范围 */
@@ -82,4 +82,4 @@ export const THROWER = {
 // ======================== 通用 ========================
 
 /** 小怪受击硬直时间（毫秒），BOSS 不受此影响 */
-export const MINION_HIT_STAGGER = 300;
+export const MINION_HIT_STAGGER = 500;

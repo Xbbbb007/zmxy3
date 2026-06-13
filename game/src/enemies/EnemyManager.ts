@@ -349,7 +349,9 @@ export class EnemyManager {
       }
 
       case EnemyState.HIT: {
-        if (Math.abs(body.velocity.x) < 5 && now >= enemy.stateTimer) {
+        // 硬直期间冻结在原地，纯计时恢复
+        body.setVelocityX(0);
+        if (now >= enemy.stateTimer) {
           enemy.state = EnemyState.PATROL;
         }
         break;
@@ -465,7 +467,9 @@ export class EnemyManager {
       }
 
       case EnemyState.HIT: {
-        if (Math.abs(body.velocity.x) < 5 && now >= enemy.stateTimer) {
+        // 硬直期间冻结，纯计时恢复
+        body.setVelocityX(0);
+        if (now >= enemy.stateTimer) {
           enemy.state = EnemyState.PATROL;
         }
         break;

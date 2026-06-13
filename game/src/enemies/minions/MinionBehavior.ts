@@ -170,10 +170,10 @@ export function damageMinion(
     enemy.windupIndicator = null;
   }
 
-  // 进入硬直
+  // 进入硬直（冻结在原地，不接受巡逻/攻击指令）
   enemy.state = EnemyState.HIT;
   enemy.stateTimer = scene.time.now + MINION_HIT_STAGGER;
-  body.setVelocityX(knockbackX);
+  body.setVelocityX(knockbackX * 0.3);  // 轻微位移，不是大幅击退
 
   // 受击闪烁
   scene.tweens.add({
