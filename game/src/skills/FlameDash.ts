@@ -65,6 +65,12 @@ export class FlameDash {
     body.setVelocityX(dir * this.dashSpeed);
     body.setDragX(0); // 冲刺期间不减速
 
+    // 冲刺结束后恢复状态
+    ctx.scene.time.delayedCall(this.dashDuration, () => {
+      ctx.setDash(false, 0);
+      body.setDragX(600); // 恢复摩擦力
+    });
+
     // ---- 伤害路径上的敌人 ----
     const startX = ctx.player.x;
     const endX = startX + dir * this.range;

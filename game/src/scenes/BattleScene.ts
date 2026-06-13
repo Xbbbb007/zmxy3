@@ -176,7 +176,7 @@ export class BattleScene extends Phaser.Scene {
     this.controller.update(this.time.now, this.combat.isAttacking, this.skill2.isCasting);
     this.combat.update(
       this.time.now,
-      this.controller.isDashing,
+      false, // 奔跑功能已暂时移除
       this.skill2.isCasting,
       this.enemyManager.enemies,
       (enemy, damage, knockbackX) => this.enemyManager.damageEnemy(enemy, damage, knockbackX),
@@ -222,7 +222,7 @@ export class BattleScene extends Phaser.Scene {
    * 技能的具体逻辑（伤害、特效、CD）都在各自的类里。
    */
   private handleSkillInput() {
-    if (this.combat.isAttacking || this.controller.isDashing) return;
+    if (this.combat.isAttacking) return;
 
     // 技能1：烈焰闪（K 键）
     if (Phaser.Input.Keyboard.JustDown(this.keyK)) {
@@ -254,8 +254,8 @@ export class BattleScene extends Phaser.Scene {
       enemies: this.enemyManager.enemies,
       damageEnemy: (enemy: Enemy, damage: number, knockbackX: number) =>
         this.enemyManager.damageEnemy(enemy, damage, knockbackX),
-      setDash: (isDashing: boolean, endTime: number) => {
-        this.controller.setDash(isDashing, endTime);
+      setDash: (isDashing: boolean, _endTime: number) => {
+        this.controller.setDash(isDashing);
       },
     };
   }

@@ -6,7 +6,7 @@
  *
  * BattleScene 只需：
  * 1. new PlayerCombat(scene, player)
- * 2. combat.update(time, isDashing, isCasting, enemies, damageEnemy) // 每帧调用
+ * 2. combat.update(time, isRunning, isCasting, enemies, damageEnemy) // 每帧调用
  * 3. combat.isAttacking // 读取攻击状态
  */
 
@@ -56,7 +56,7 @@ export class PlayerCombat {
    * 每帧更新（在 BattleScene.update() 中调用）
    *
    * @param time        当前时间戳 (scene.time.now)
-   * @param isDashing   冲刺中标志（由 PlayerController 提供）
+   * @param isRunning   奔跑中标志（由 PlayerController 提供）
    * @param isCasting   蓄力中标志（由 GiantSword 提供）
    * @param enemies     敌人物理组（用于命中检测）
    * @param damageEnemy 伤害敌人回调
@@ -64,14 +64,14 @@ export class PlayerCombat {
    */
   update(
     time: number,
-    isDashing: boolean,
+    isRunning: boolean,
     isCasting: boolean,
     enemies: Phaser.Physics.Arcade.Group,
     damageEnemy: (enemy: Enemy, damage: number, knockbackX: number) => void,
     facingRight: boolean,
   ) {
-    // 冲刺/蓄力中不攻击
-    if (isDashing || isCasting) return;
+    // 奔跑/蓄力中不攻击
+    if (isRunning || isCasting) return;
 
     // ---- 连招超时重置 ----
     if (this.comboTimer !== null && time >= this.comboTimer) {

@@ -55,7 +55,7 @@ export class GiantSword {
     this.isCasting = true;
 
     const body = ctx.player.body as Phaser.Physics.Arcade.Body;
-    body.setVelocityX(0); // 蓄力时站定不动
+    body.setVelocity(0, 0); // 蓄力时完全定住（X + Y）
 
     // ===== 阶段1：法阵出现（蓄力 CHARGE_TIME 毫秒） =====
     const magicCircle = this.createMagicCircle(ctx);
